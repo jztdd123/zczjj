@@ -1,6 +1,6 @@
 import { getContext, extension_settings } from "../../../extensions.js";
 import { eventSource, event_types, saveSettingsDebounced } from "../../../../script.js";
-import { createNewWorldInfo, getWorldInfoPrompt } from "../../../world-info.js";
+import { world_info, getWorldInfoPrompt } from "../../../world-info.js";
 
 const extensionName = "st-summarizer";
 const localStorageKey = "summarizer_credentials";
@@ -14,7 +14,7 @@ const defaultSettings = {
     autoHide: true,
     autoWorldInfo: true,
     worldInfoEntryUid: null,
-    worldInfoBookName: null,
+    currentChatId: null,
     apiEndpoint: "",
     apiKey: "",
     model: "",
@@ -65,46 +65,39 @@ function generateEntryName() {
     return `${charName} - ${timestamp}`;
 }
 
+// 获取聊天世界书名称
+function getChatWorldInfoName() {
+    const context = getContext();
+    // 聊天世界书存在 chatMetadata 中
+    if (context.chatMetadata?.world_info) {
+        return context.chatMetadata.world_info;
+    }
+    return null;
+}
+
 // 获取或创建世界书条目
 async function getOrCreateWorldInfoEntry() {
     const settings = getSettings();
     const context = getContext();
 
-    // 获取当前角色关联的世界书
-    let worldName = null;
-    const charLore = context.characterLore;
+    // 获取聊天世界书
+    let worldName = getChatWorldInfoName();
 
-    if (charLore && charLore.length > 0) {
-        worldName = charLore[0].name || charLore[0];
-    }
-
-    // 如果没有关联世界书，尝试使用全局世界书
     if (!worldName) {
-        const worldInfoSettings = context.worldInfoSettings;
-        if (worldInfoSettings?.selectedWorld) {
-            worldName = worldInfoSettings.selectedWorld;
-        }
+        updateWorldInfoStatus("未绑定聊天世界书");
+        return null;
     }
 
-    // 还是没有就创建新的
-    if (!worldName) {
-        const charName = context.name2 || "Assistant";
-        worldName = `${charName}_Summaries`;
-
-        try {
-            await fetch("/api/worldinfo/create", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ name: worldName })
-            });
-        } catch (e) {
-            console.error("创建世界书失败", e);
-        }
+    // 检查是否切换了聊天
+    const currentChatId = context.chatId;
+    if (settings.currentChatId !== currentChatId) {
+        // 新聊天，重置条目
+        settings.worldInfoEntryUid = null;
+        settings.currentChatId = currentChatId;
+        saveSettings();
     }
 
-    settings.worldInfoBookName = worldName;
-
-    // 检查是否已有条目
+    // 已有条目直接返回
     if (settings.worldInfoEntryUid) {
         return { bookName: worldName, uid: settings.worldInfoEntryUid };
     }
@@ -120,6 +113,7 @@ async function getOrCreateWorldInfoEntry() {
                 name: worldName,
                 entry: {
                     key: [entryName],
+                    keysecondary: [],
                     content: "",
                     comment: entryName,
                     constant: true,
@@ -138,11 +132,15 @@ async function getOrCreateWorldInfoEntry() {
             const data = await response.json();
             settings.worldInfoEntryUid = data.uid;
             saveSettings();
-            console.log(`痔疮总结机: 创建世界书条目 "${entryName}"`);
+            console.log(`痔疮总结机: 创建条目 "${entryName}" in ${worldName}`);
+            updateWorldInfoStatus(`已绑定: ${worldName}`);
             return { bookName: worldName, uid: data.uid, isNew: true };
+        } else {
+            throw new Error(`HTTP ${response.status}`);
         }
     } catch (e) {
-        console.error("创建世界书条目失败", e);
+        console.error("创建条目失败", e);
+        updateWorldInfoStatus("创建失败: " + e.message);
     }
 
     return null;
@@ -154,23 +152,20 @@ async function appendToWorldInfo(summary, range) {
     if (!settings.autoWorldInfo) return;
 
     const entryInfo = await getOrCreateWorldInfoEntry();
-    if (!entryInfo) {
-        console.error("无法获取世界书条目");
-        return;
-    }
+    if (!entryInfo) return;
 
     try {
-        // 获取现有条目内容
+        // 获取现有条目
         const getResponse = await fetch(`/api/worldinfo/get?name=${encodeURIComponent(entryInfo.bookName)}`);
-        if (!getResponse.ok) return;
+        if (!getResponse.ok) throw new Error("获取世界书失败");
 
         const worldData = await getResponse.json();
         const entries = worldData.entries || {};
         const entry = entries[entryInfo.uid];
 
-        if (!entry) return;
+        if (!entry) throw new Error("条目不存在");
 
-        // 追加新总结
+        // 追加内容
         const timestamp = new Date().toLocaleString();
         const newContent = entry.content
             ? `${entry.content}\n\n---\n【${timestamp}】消息 ${range}\n${summary}`
@@ -183,18 +178,15 @@ async function appendToWorldInfo(summary, range) {
             body: JSON.stringify({
                 name: entryInfo.bookName,
                 uid: entryInfo.uid,
-                entry: {
-                    ...entry,
-                    content: newContent
-                }
+                entry: { ...entry, content: newContent }
             })
         });
 
-        console.log(`痔疮总结机: 已追加到世界书`);
+        console.log("痔疮总结机: 已追加到世界书");
         updateWorldInfoStatus(`已写入: ${entryInfo.bookName}`);
 
     } catch (e) {
-        console.error("写入世界书失败", e);
+        console.error("写入失败", e);
         updateWorldInfoStatus("写入失败: " + e.message);
     }
 }
@@ -291,7 +283,7 @@ async function refreshModelList() {
 function hideMessages(startIdx, endIdx) {
     const context = getContext();
     const chat = context.chat;
-    if (!chat) return;
+    if (!chat) return 0;
 
     let hiddenCount = 0;
     for (let i = startIdx; i < endIdx && i < chat.length; i++) {
@@ -300,10 +292,7 @@ function hideMessages(startIdx, endIdx) {
             hiddenCount++;
         }
     }
-
-    if (hiddenCount > 0 && typeof context.saveChat === 'function') {
-        context.saveChat();
-    }
+    if (hiddenCount > 0 && typeof context.saveChat === 'function') context.saveChat();
     return hiddenCount;
 }
 
@@ -313,18 +302,18 @@ function checkContinuousHide() {
 
     const context = getContext();
     const chat = context.chat;
-    if (!chat || chat.length === 0) return;
+    if (!chat?.length) return;
 
     const hideUntil = chat.length - settings.keepVisible;
     if (hideUntil > 0) {
-        let hiddenCount = 0;
+        let count = 0;
         for (let i = 0; i < hideUntil; i++) {
             if (!chat[i].is_system && !chat[i].is_hidden) {
                 chat[i].is_hidden = true;
-                hiddenCount++;
+                count++;
             }
         }
-        if (hiddenCount > 0 && typeof context.saveChat === 'function') {
+        if (count > 0 && typeof context.saveChat === 'function') {
             context.saveChat();
             updateHideStatus();
         }
@@ -332,16 +321,12 @@ function checkContinuousHide() {
 }
 
 function updateHideStatus() {
-    const context = getContext();
-    const chat = context.chat;
+    const chat = getContext().chat;
     if (!chat) return;
-
     const visible = chat.filter(m => !m.is_hidden && !m.is_system).length;
     const hidden = chat.filter(m => m.is_hidden && !m.is_system).length;
-    const total = chat.filter(m => !m.is_system).length;
-
     const el = document.getElementById("summarizer-hide-status");
-    if (el) el.textContent = `显示: ${visible} | 隐藏: ${hidden} | 总计: ${total}`;
+    if (el) el.textContent = `显示:${visible} 隐藏:${hidden} 总:${chat.filter(m => !m.is_system).length}`;
 }
 
 function unhideAll() {
@@ -350,28 +335,18 @@ function unhideAll() {
     if (!chat) return;
 
     let count = 0;
-    for (const msg of chat) {
-        if (msg.is_hidden) {
-            msg.is_hidden = false;
-            count++;
-        }
-    }
-
-    if (count > 0 && typeof context.saveChat === 'function') {
-        context.saveChat();
-    }
+    chat.forEach(m => { if (m.is_hidden) { m.is_hidden = false; count++; } });
+    if (count > 0 && typeof context.saveChat === 'function') context.saveChat();
 
     updateHideStatus();
-    document.getElementById("summarizer-output").textContent = `已取消隐藏 ${count} 条消息`;
+    document.getElementById("summarizer-output").textContent = `已取消隐藏 ${count} 条`;
 }
 
-// 重置世界书绑定
 function resetWorldInfoBinding() {
     const settings = getSettings();
     settings.worldInfoEntryUid = null;
-    settings.worldInfoBookName = null;
     saveSettings();
-    updateWorldInfoStatus("已重置，下次总结将创建新条目");
+    updateWorldInfoStatus("已重置，下次总结创建新条目");
 }
 
 function getRecentChat(start, end) {
@@ -425,75 +400,45 @@ async function doSummarize() {
         const summary = await callAPI(`${chat}\n---\n${settings.summaryPrompt}`);
         const range = `${start + 1}-${len}`;
 
-        // 保存到历史
-        settings.savedSummaries.push({
-            time: new Date().toLocaleString(),
-            range: range,
-            content: summary
-        });
+        settings.savedSummaries.push({ time: new Date().toLocaleString(), range, content: summary });
 
-        // 写入世界书
-        if (settings.autoWorldInfo) {
-            await appendToWorldInfo(summary, range);
-        }
+        if (settings.autoWorldInfo) await appendToWorldInfo(summary, range);
 
-        // 隐藏消息
         if (settings.autoHide) {
             const hideUntil = len - settings.keepVisible;
             if (hideUntil > 0) {
                 hideMessages(0, hideUntil);
-                out.textContent = `[已隐藏 1-${hideUntil} 楼]\n\n${summary}`;
-            } else {
-                out.textContent = summary;
-            }
-        } else {
-            out.textContent = summary;
-        }
+                out.textContent = `[隐藏1-${hideUntil}楼]\n\n${summary}`;
+            } else out.textContent = summary;
+        } else out.textContent = summary;
 
         settings.lastSummarizedIndex = len;
         saveSettings();
         updateHideStatus();
 
-    } catch (e) {
-        out.textContent = "错误: " + e.message;
-    }
+    } catch (e) { out.textContent = "错误: " + e.message; }
     btn.disabled = false;
 }
 
 async function checkAuto() {
     const settings = getSettings();
-
     if (settings.autoHide) checkContinuousHide();
-
     if (!settings.autoSummarize) return;
 
     const len = getContext().chat?.length || 0;
     if (len - settings.lastSummarizedIndex >= settings.triggerInterval) {
         const out = document.getElementById("summarizer-output");
-
         try {
             const start = settings.lastSummarizedIndex;
             const chat = getRecentChat(start, len);
             if (!chat) return;
 
             out.textContent = "[自动总结中...]";
-
             const summary = await callAPI(`${chat}\n---\n${settings.summaryPrompt}`);
             const range = `${start + 1}-${len}`;
 
-            settings.savedSummaries.push({
-                time: new Date().toLocaleString(),
-                range: range,
-                content: summary,
-                auto: true
-            });
-
-            // 写入世界书
-            if (settings.autoWorldInfo) {
-                await appendToWorldInfo(summary, range);
-            }
-
-            // 隐藏
+            settings.savedSummaries.push({ time: new Date().toLocaleString(), range, content: summary, auto: true });
+            if (settings.autoWorldInfo) await appendToWorldInfo(summary, range);
             if (settings.autoHide) {
                 const hideUntil = len - settings.keepVisible;
                 if (hideUntil > 0) hideMessages(0, hideUntil);
@@ -502,13 +447,8 @@ async function checkAuto() {
             settings.lastSummarizedIndex = len;
             saveSettings();
             updateHideStatus();
-
-            out.textContent = `[自动总结完成]\n${summary}`;
-
-        } catch (e) {
-            console.error("自动总结失败", e);
-            out.textContent = "自动总结失败: " + e.message;
-        }
+            out.textContent = `[自动完成]\n${summary}`;
+        } catch (e) { out.textContent = "自动失败: " + e.message; }
     }
 }
 
@@ -517,7 +457,7 @@ function showHistory() {
     const out = document.getElementById("summarizer-output");
     if (!s.savedSummaries.length) { out.textContent = "无历史"; return; }
     out.textContent = s.savedSummaries.slice().reverse().map(x =>
-        `【${x.time}】${x.range}${x.auto ? " (自动)" : ""}\n${x.content}`
+        `【${x.time}】${x.range}${x.auto ? "(自动)" : ""}\n${x.content}`
     ).join("\n\n---\n\n");
 }
 
@@ -527,6 +467,15 @@ function clearHistory() {
     s.lastSummarizedIndex = 0;
     saveSettings();
     document.getElementById("summarizer-output").textContent = "已清空";
+}
+
+function refreshChatWorldInfo() {
+    const worldName = getChatWorldInfoName();
+    if (worldName) {
+        updateWorldInfoStatus(`聊天世界书: ${worldName}`);
+    } else {
+        updateWorldInfoStatus("未绑定聊天世界书");
+    }
 }
 
 jQuery(() => {
@@ -540,42 +489,40 @@ jQuery(() => {
             <div class="inline-drawer-icon fa-solid fa-circle-chevron-down"></div>
         </div>
         <div class="inline-drawer-content">
-            <div style="display:flex;gap:10px;margin-bottom:8px;">
-                <div style="flex:1;"><label>API地址:</label><input type="text" id="summarizer-api-endpoint" class="text_pole" placeholder="https://xxx/v1"></input></div>
-                <div style="flex:1;"><label>API密钥:</label><input type="password" id="summarizer-api-key" class="text_pole"></input></div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px;">
+                <div><label>API地址:</label><input type="text" id="summarizer-api-endpoint" class="text_pole" placeholder="https://xxx/v1"></input></div>
+                <div><label>API密钥:</label><input type="password" id="summarizer-api-key" class="text_pole"></input></div>
             </div>
-            <div style="display:flex;gap:10px;align-items:end;margin-bottom:8px;">
-                <div style="flex:1;"><label>模型:</label><select id="summarizer-model-select" class="text_pole"><option>--</option></select></div>
-                <div style="flex:1;"><label>手动:</label><input type="text" id="summarizer-model-manual" class="text_pole"></input></div>
+            <div style="display:grid;grid-template-columns:1fr 1fr auto auto;gap:8px;align-items:end;margin-bottom:8px;">
+                <div><label>模型:</label><select id="summarizer-model-select" class="text_pole"><option>--</option></select></div>
+                <div><label>手动输入:</label><input type="text" id="summarizer-model-manual" class="text_pole"></input></div>
                 <button id="summarizer-fetch-models" class="menu_button">获取</button>
                 <button id="summarizer-test-btn" class="menu_button">测试</button>
             </div>
             <div id="summarizer-status" style="font-size:12px;color:gray;margin-bottom:8px;">未连接</div>
             <hr></hr>
-            <div style="display:flex;gap:10px;margin:8px 0;">
-                <div style="flex:2;"><label>提示词:</label><textarea id="summarizer-prompt" class="text_pole" rows="2"></textarea></div>
-                <div style="flex:1;"><label>总结条数:</label><input type="number" id="summarizer-max-msgs" class="text_pole" min="5" max="200"></input></div>
+            <div style="display:grid;grid-template-columns:2fr 1fr 1fr 1fr;gap:8px;margin:8px 0;">
+                <div><label>总结提示词:</label><textarea id="summarizer-prompt" class="text_pole" rows="2"></textarea></div>
+                <div><label>总结条数:</label><input type="number" id="summarizer-max-msgs" class="text_pole" min="5" max="200"></input></div>
+                <div><label>自动间隔:</label><input type="number" id="summarizer-trigger-interval" class="text_pole" min="10" max="200"></input></div>
+                <div><label>保留显示:</label><input type="number" id="summarizer-keep-visible" class="text_pole" min="1" max="100"></input></div>
             </div>
-            <div style="display:flex;gap:10px;margin:8px 0;">
-                <div style="flex:1;"><label>自动间隔:</label><input type="number" id="summarizer-trigger-interval" class="text_pole" min="10" max="200"></input></div>
-                <div style="flex:1;"><label>保留显示:</label><input type="number" id="summarizer-keep-visible" class="text_pole" min="1" max="100"></input></div>
-            </div>
-            <div style="display:flex;gap:15px;align-items:center;margin:8px 0;flex-wrap:wrap;">
+            <div style="display:flex;gap:15px;align-items:center;margin:8px 0;">
                 <label class="checkbox_label"><input type="checkbox" id="summarizer-auto-enabled"> 自动总结</input></label>
                 <label class="checkbox_label"><input type="checkbox" id="summarizer-auto-hide"> 自动隐藏</input></label>
                 <label class="checkbox_label"><input type="checkbox" id="summarizer-auto-worldinfo"> 写入世界书</input></label>
             </div>
-            <div style="display:flex;gap:10px;font-size:12px;color:#888;margin:5px 0;">
-                <span id="summarizer-hide-status">显示: - | 隐藏: - | 总计: -</span>
-                <span>|</span>
-                <span id="summarizer-worldinfo-status">世界书: 未绑定</span>
+            <div style="display:flex;gap:15px;font-size:12px;color:#888;margin:5px 0;">
+                <span id="summarizer-hide-status">显示:- 隐藏:- 总:-</span>
+                <span id="summarizer-worldinfo-status">世界书: 检测中...</span>
             </div>
-            <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;">
+            <div style="display:flex;gap:8px;margin-top:8px;">
                 <button id="summarizer-btn" class="menu_button">总结</button>
                 <button id="summarizer-history-btn" class="menu_button">历史</button>
                 <button id="summarizer-clear-btn" class="menu_button">清空</button>
                 <button id="summarizer-unhide-btn" class="menu_button">取消隐藏</button>
-                <button id="summarizer-reset-worldinfo" class="menu_button">重置世界书</button>
+                <button id="summarizer-reset-worldinfo" class="menu_button">重置条目</button>
+                <button id="summarizer-refresh-worldinfo" class="menu_button">刷新世界书</button>
             </div>
             <div id="summarizer-output" style="margin-top:10px;padding:10px;background:var(--SmartThemeBlurTintColor);border-radius:5px;max-height:200px;overflow-y:auto;white-space:pre-wrap;">就绪</div>
         </div>
@@ -602,13 +549,20 @@ jQuery(() => {
     $("#summarizer-clear-btn").on("click", clearHistory);
     $("#summarizer-unhide-btn").on("click", unhideAll);
     $("#summarizer-reset-worldinfo").on("click", resetWorldInfoBinding);
+    $("#summarizer-refresh-worldinfo").on("click", refreshChatWorldInfo);
 
     eventSource.on(event_types.MESSAGE_RECEIVED, () => setTimeout(checkAuto, 1000));
     eventSource.on(event_types.MESSAGE_SENT, () => setTimeout(checkAuto, 1000));
+    eventSource.on(event_types.CHAT_CHANGED, () => {
+        setTimeout(() => {
+            refreshChatWorldInfo();
+            updateHideStatus();
+        }, 500);
+    });
 
     setTimeout(() => {
         updateHideStatus();
-        if (s.worldInfoBookName) updateWorldInfoStatus(`已绑定: ${s.worldInfoBookName}`);
+        refreshChatWorldInfo();
     }, 500);
 
     console.log("痔疮总结机 loaded");
