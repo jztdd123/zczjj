@@ -1,5 +1,5 @@
 import { getContext, extension_settings } from "../../../extensions.js";
-import { eventSource, event_types, saveSettingsDebounced, getRequestHeaders } from "../../../../script.js";
+import { eventSource, event_types, saveSettingsDebounced } from "../../../../script.js";
 
 const extensionName = "st-summarizer";
 const localStorageKey = "summarizer_credentials";
@@ -7,7 +7,7 @@ const localStorageKey = "summarizer_credentials";
 const defaultSettings = {
     summaryPrompt: "请用简洁的中文总结以上对话的主要内容，保留关键信息和角色行为。",
     maxMessages: 20,
-    autoSummarize: true,
+    autoSummarize: false,
     triggerInterval: 20,
     apiEndpoint: "",
     apiKey: "",
@@ -22,370 +22,288 @@ function saveCredentialsLocal(endpoint, key) {
 
 function loadCredentialsLocal() {
     try {
-        const data = localStorage.getItem(localStorageKey);
-        return data ? JSON.parse(data) : null;
+        return JSON.parse(localStorage.getItem(localStorageKey)) || null;
     } catch { return null; }
 }
 
 function loadSettings() {
     extension_settings[extensionName] = extension_settings[extensionName] || {};
-    if (Object.keys(extension_settings[extensionName]).length === 0) {
-        Object.assign(extension_settings[extensionName], defaultSettings);
-    }
     for (const key in defaultSettings) {
         if (extension_settings[extensionName][key] === undefined) {
             extension_settings[extensionName][key] = defaultSettings[key];
         }
     }
-    const localCreds = loadCredentialsLocal();
-    if (localCreds) {
-        if (localCreds.apiEndpoint) extension_settings[extensionName].apiEndpoint = localCreds.apiEndpoint;
-        if (localCreds.apiKey) extension_settings[extensionName].apiKey = localCreds.apiKey;
-    }
+    const creds = loadCredentialsLocal();
+    if (creds?.apiEndpoint) extension_settings[extensionName].apiEndpoint = creds.apiEndpoint;
+    if (creds?.apiKey) extension_settings[extensionName].apiKey = creds.apiKey;
 }
 
 function getSettings() { return extension_settings[extensionName]; }
 
 function saveSettings() {
-    const settings = getSettings();
-    saveCredentialsLocal(settings.apiEndpoint, settings.apiKey);
+    const s = getSettings();
+    saveCredentialsLocal(s.apiEndpoint, s.apiKey);
     saveSettingsDebounced();
 }
 
-// 通过ST代理发送请求
-async function stProxyFetch(targetUrl, method, headers, body) {
-    const stHeaders = getRequestHeaders();
+// 构建正确的API路径
+function getCompletionsUrl(base) {
+    base = base.trim().replace(/\/+$/, "");
+    if (base.endsWith("/chat/completions")) return base;
+    if (base.endsWith("/v1")) return base + "/chat/completions";
+    return base + "/v1/chat/completions";
+}
 
-    const response = await fetch("/api/extensions/fetch", {
-        method: "POST",
-        headers: stHeaders,
-        body: JSON.stringify({
-            url: targetUrl,
-            method: method,
-            headers: headers,
-            body: body
-        })
-    });
-
-    return response;
+function getModelsUrl(base) {
+    base = base.trim().replace(/\/+$/, "");
+    if (base.endsWith("/models")) return base;
+    if (base.includes("/chat/completions")) return base.replace("/chat/completions", "/models");
+    if (base.endsWith("/v1")) return base + "/models";
+    return base + "/v1/models";
 }
 
 async function fetchModels() {
     const settings = getSettings();
-    if (!settings.apiEndpoint || !settings.apiKey) {
-        throw new Error("请先填写API地址和密钥");
-    }
+    if (!settings.apiEndpoint || !settings.apiKey) throw new Error("填写API配置");
 
-    let modelsUrl = settings.apiEndpoint;
-    if (modelsUrl.includes("/chat/completions")) {
-        modelsUrl = modelsUrl.replace("/chat/completions", "/models");
-    } else if (modelsUrl.endsWith("/v1")) {
-        modelsUrl = modelsUrl + "/models";
-    } else if (!modelsUrl.includes("/models")) {
-        modelsUrl = modelsUrl.replace(/\/+$/, "") + "/models";
-    }
+    const url = getModelsUrl(settings.apiEndpoint);
+    console.log("获取模型列表:", url);
 
-    const response = await stProxyFetch(
-        modelsUrl,
-        "GET",
-        { "Authorization": `Bearer ${settings.apiKey}` },
-        null
-    );
+    const res = await fetch(url, {
+        method: "GET",
+        headers: { "Authorization": `Bearer ${settings.apiKey}` }
+    });
 
-    if (!response.ok) throw new Error(`获取模型失败: ${response.status}`);
-    const data = await response.json();
+    if (!res.ok) throw new Error(`${res.status}`);
+    const data = await res.json();
     return data.data || data.models || [];
 }
 
 async function testConnection() {
     const settings = getSettings();
-    const statusDiv = document.getElementById("summarizer-status");
-    statusDiv.textContent = "测试中...";
-    statusDiv.style.color = "orange";
+    const status = document.getElementById("summarizer-status");
+    status.textContent = "测试中...";
+    status.style.color = "orange";
 
     try {
-        if (!settings.apiEndpoint || !settings.apiKey || !settings.model) {
-            throw new Error("请填写完整配置");
-        }
+        if (!settings.apiEndpoint || !settings.apiKey || !settings.model) throw new Error("配置不完整");
 
-        const response = await stProxyFetch(
-            settings.apiEndpoint,
-            "POST",
-            {
+        const url = getCompletionsUrl(settings.apiEndpoint);
+        console.log("测试连接:", url);
+
+        const res = await fetch(url, {
+            method: "POST",
+            headers: {
                 "Content-Type": "application/json",
                 "Authorization": `Bearer ${settings.apiKey}`
             },
-            JSON.stringify({
+            body: JSON.stringify({
                 model: settings.model,
-                messages: [{ role: "user", content: "Hi" }],
+                messages: [{ role: "user", content: "hi" }],
                 max_tokens: 5
             })
-        );
+        });
 
-        if (!response.ok) {
-            const errText = await response.text();
-            throw new Error(`${response.status}: ${errText.slice(0, 80)}`);
-        }
-
-        const data = await response.json();
+        if (!res.ok) throw new Error(`${res.status}`);
+        const data = await res.json();
         if (data.choices) {
-            statusDiv.textContent = "✓ 连接成功";
-            statusDiv.style.color = "lime";
-        } else {
-            throw new Error("响应格式异常");
-        }
-    } catch (error) {
-        statusDiv.textContent = "✗ " + error.message;
-        statusDiv.style.color = "red";
+            status.textContent = "✓ 成功";
+            status.style.color = "lime";
+        } else throw new Error("响应异常");
+    } catch (e) {
+        status.textContent = "✗ " + e.message;
+        status.style.color = "red";
     }
 }
 
 async function refreshModelList() {
-    const selectEl = document.getElementById("summarizer-model-select");
-    const statusDiv = document.getElementById("summarizer-status");
-    selectEl.innerHTML = '<option value="">加载中...</option>';
-    statusDiv.textContent = "获取模型...";
-    statusDiv.style.color = "orange";
+    const sel = document.getElementById("summarizer-model-select");
+    const status = document.getElementById("summarizer-status");
+    sel.innerHTML = '<option>加载中...</option>';
+    status.textContent = "获取模型...";
+    status.style.color = "orange";
 
     try {
         const models = await fetchModels();
-        selectEl.innerHTML = '<option value="">-- 选择 --</option>';
+        sel.innerHTML = '<option value="">-- 选择 --</option>';
         models.forEach(m => {
-            const modelId = m.id || m.name || m;
-            const opt = document.createElement("option");
-            opt.value = modelId;
-            opt.textContent = modelId;
-            selectEl.appendChild(opt);
+            const id = m.id || m.name || m;
+            sel.innerHTML += `<option value="${id}">${id}</option>`;
         });
         const settings = getSettings();
-        if (settings.model) selectEl.value = settings.model;
-        statusDiv.textContent = `✓ ${models.length} 个模型`;
-        statusDiv.style.color = "lime";
-    } catch (error) {
-        selectEl.innerHTML = '<option value="">失败</option>';
-        statusDiv.textContent = "✗ " + error.message;
-        statusDiv.style.color = "red";
+        if (settings.model) sel.value = settings.model;
+        status.textContent = `✓ ${models.length} 模型`;
+        status.style.color = "lime";
+    } catch (e) {
+        sel.innerHTML = '<option>失败</option>';
+        status.textContent = "✗ " + e.message;
+        status.style.color = "red";
     }
 }
 
-function getRecentChat(startIndex, endIndex) {
-    const context = getContext();
-    const chat = context.chat;
-    if (!chat || chat.length === 0) return null;
-    const messages = chat.slice(startIndex, endIndex);
-    let chatText = "";
-    for (const msg of messages) {
-        if (msg.is_user) chatText += `用户: ${msg.mes}\n\n`;
-        else if (msg.is_system) continue;
-        else chatText += `${msg.name}: ${msg.mes}\n\n`;
-    }
-    return chatText;
+function getRecentChat(start, end) {
+    const chat = getContext().chat;
+    if (!chat?.length) return null;
+    let text = "";
+    chat.slice(start, end).forEach(m => {
+        if (m.is_system) return;
+        text += `${m.is_user ? "用户" : m.name}: ${m.mes}\n\n`;
+    });
+    return text;
 }
 
-async function callCustomAPI(prompt) {
+async function callAPI(prompt) {
     const settings = getSettings();
-    if (!settings.apiEndpoint || !settings.apiKey) throw new Error("请先配置API");
+    if (!settings.apiEndpoint || !settings.apiKey || !settings.model) throw new Error("配置不完整");
 
-    const response = await stProxyFetch(
-        settings.apiEndpoint,
-        "POST",
-        {
+    const url = getCompletionsUrl(settings.apiEndpoint);
+    const res = await fetch(url, {
+        method: "POST",
+        headers: {
             "Content-Type": "application/json",
             "Authorization": `Bearer ${settings.apiKey}`
         },
-        JSON.stringify({
+        body: JSON.stringify({
             model: settings.model,
             messages: [{ role: "user", content: prompt }],
             temperature: 0.7,
             max_tokens: 2000
         })
-    );
+    });
 
-    if (!response.ok) {
-        const errText = await response.text();
-        throw new Error(`API失败: ${response.status}`);
-    }
-    const data = await response.json();
-    return data.choices?.[0]?.message?.content || "总结失败";
+    if (!res.ok) throw new Error(`API ${res.status}`);
+    const data = await res.json();
+    return data.choices?.[0]?.message?.content || "失败";
 }
 
-async function doManualSummarize() {
+async function doSummarize() {
     const settings = getSettings();
-    const outputDiv = document.getElementById("summarizer-output");
+    const out = document.getElementById("summarizer-output");
     const btn = document.getElementById("summarizer-btn");
-    outputDiv.textContent = "生成中...";
+    out.textContent = "生成中...";
     btn.disabled = true;
 
     try {
-        const context = getContext();
-        const chatLength = context.chat?.length || 0;
-        const startIndex = Math.max(0, chatLength - settings.maxMessages);
-        const chatContent = getRecentChat(startIndex, chatLength);
-        if (!chatContent) { outputDiv.textContent = "无聊天记录"; btn.disabled = false; return; }
+        const len = getContext().chat?.length || 0;
+        const start = Math.max(0, len - settings.maxMessages);
+        const chat = getRecentChat(start, len);
+        if (!chat) { out.textContent = "无记录"; btn.disabled = false; return; }
 
-        const prompt = `${chatContent}\n\n---\n${settings.summaryPrompt}`;
-        const summary = await callCustomAPI(prompt);
-        outputDiv.textContent = summary;
+        const summary = await callAPI(`${chat}\n---\n${settings.summaryPrompt}`);
+        out.textContent = summary;
 
         settings.savedSummaries.push({
             time: new Date().toLocaleString(),
-            range: `${startIndex + 1}-${chatLength}`,
+            range: `${start + 1}-${len}`,
             content: summary
         });
         saveSettings();
-    } catch (error) {
-        outputDiv.textContent = "错误: " + error.message;
+    } catch (e) {
+        out.textContent = "错误: " + e.message;
     }
     btn.disabled = false;
 }
 
-async function checkAutoSummarize() {
+async function checkAuto() {
     const settings = getSettings();
     if (!settings.autoSummarize) return;
-    const context = getContext();
-    const chatLength = context.chat?.length || 0;
-    const diff = chatLength - settings.lastSummarizedIndex;
 
-    if (diff >= settings.triggerInterval) {
+    const len = getContext().chat?.length || 0;
+    if (len - settings.lastSummarizedIndex >= settings.triggerInterval) {
         try {
-            const chatContent = getRecentChat(settings.lastSummarizedIndex, chatLength);
-            if (!chatContent) return;
-            const prompt = `${chatContent}\n\n---\n${settings.summaryPrompt}`;
-            const summary = await callCustomAPI(prompt);
+            const chat = getRecentChat(settings.lastSummarizedIndex, len);
+            if (!chat) return;
 
+            const summary = await callAPI(`${chat}\n---\n${settings.summaryPrompt}`);
             settings.savedSummaries.push({
                 time: new Date().toLocaleString(),
-                range: `${settings.lastSummarizedIndex + 1}-${chatLength}`,
+                range: `${settings.lastSummarizedIndex + 1}-${len}`,
                 content: summary,
                 auto: true
             });
-            settings.lastSummarizedIndex = chatLength;
+            settings.lastSummarizedIndex = len;
             saveSettings();
 
-            const outputDiv = document.getElementById("summarizer-output");
-            if (outputDiv) outputDiv.textContent = `[自动]\n${summary}`;
+            const out = document.getElementById("summarizer-output");
+            if (out) out.textContent = `[自动]\n${summary}`;
         } catch (e) { console.error("自动总结失败", e); }
     }
 }
 
 function showHistory() {
-    const settings = getSettings();
-    const outputDiv = document.getElementById("summarizer-output");
-    if (settings.savedSummaries.length === 0) { outputDiv.textContent = "无历史"; return; }
-    let text = "=== 历史 ===\n\n";
-    for (let i = settings.savedSummaries.length - 1; i >= 0; i--) {
-        const s = settings.savedSummaries[i];
-        text += `【${s.time}】${s.range} ${s.auto ? "(自动)" : ""}\n${s.content}\n\n---\n\n`;
-    }
-    outputDiv.textContent = text;
+    const s = getSettings();
+    const out = document.getElementById("summarizer-output");
+    if (!s.savedSummaries.length) { out.textContent = "无历史"; return; }
+    out.textContent = s.savedSummaries.slice().reverse().map(x =>
+        `【${x.time}】${x.range}${x.auto ? " (自动)" : ""}\n${x.content}`
+    ).join("\n\n---\n\n");
 }
 
 function clearHistory() {
-    const settings = getSettings();
-    settings.savedSummaries = [];
-    settings.lastSummarizedIndex = 0;
+    const s = getSettings();
+    s.savedSummaries = [];
+    s.lastSummarizedIndex = 0;
     saveSettings();
     document.getElementById("summarizer-output").textContent = "已清空";
 }
 
-jQuery(async () => {
+jQuery(() => {
     loadSettings();
-    const settings = getSettings();
+    const s = getSettings();
 
-    const settingsHtml = `
+    const html = `
     <div class="inline-drawer">
         <div class="inline-drawer-toggle inline-drawer-header">
             <b>痔疮总结机</b>
             <div class="inline-drawer-icon fa-solid fa-circle-chevron-down"></div>
         </div>
         <div class="inline-drawer-content">
-
-            <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
-                <div>
-                    <label>API地址:</label>
-                    <input type="text" id="summarizer-api-endpoint" class="text_pole" placeholder="https://..."></input>
-                </div>
-                <div>
-                    <label>API密钥:</label>
-                    <input type="password" id="summarizer-api-key" class="text_pole" placeholder="sk-..."></input>
-                </div>
+            <div style="display:flex;gap:10px;margin-bottom:8px;">
+                <div style="flex:1;"><label>API地址:</label><input type="text" id="summarizer-api-endpoint" class="text_pole" placeholder="https://xxx/v1"></div></input>
+                <div style="flex:1;"><label>API密钥:</label><input type="password" id="summarizer-api-key" class="text_pole"></div></input>
             </div>
-
-            <div style="display:grid; grid-template-columns:1fr 1fr auto auto; gap:10px; margin-top:8px; align-items:end;">
-                <div>
-                    <label>选择模型:</label>
-                    <select id="summarizer-model-select" class="text_pole"><option value="">--</option></select>
-                </div>
-                <div>
-                    <label>手动输入:</label>
-                    <input type="text" id="summarizer-model-manual" class="text_pole" placeholder="model-name"></input>
-                </div>
-                <button id="summarizer-fetch-models" class="menu_button" style="height:35px;">获取模型</button>
-                <button id="summarizer-test-btn" class="menu_button" style="height:35px;">测试</button>
+            <div style="display:flex;gap:10px;align-items:end;margin-bottom:8px;">
+                <div style="flex:1;"><label>模型:</label><select id="summarizer-model-select" class="text_pole"><option>--</option></select></div>
+                <div style="flex:1;"><label>手动:</label><input type="text" id="summarizer-model-manual" class="text_pole"></div></input>
+                <button id="summarizer-fetch-models" class="menu_button">获取</button>
+                <button id="summarizer-test-btn" class="menu_button">测试</button>
             </div>
-
-            <div id="summarizer-status" style="font-size:12px; color:gray; margin:5px 0;">未连接</div>
-
-            <hr>
-</hr>
-            <div style="display:grid; grid-template-columns:2fr 1fr 1fr; gap:10px;">
-                <div>
-                    <label>总结提示词:</label>
-                    <textarea id="summarizer-prompt" class="text_pole" rows="2" style="resize:vertical;"></textarea>
-                </div>
-                <div>
-                    <label>手动条数:</label>
-                    <input type="number" id="summarizer-max-msgs" class="text_pole" min="5" max="200"></input>
-                </div>
-                <div>
-                    <label>自动间隔:</label>
-                    <input type="number" id="summarizer-trigger-interval" class="text_pole" min="10" max="200"></input>
-                </div>
+            <div id="summarizer-status" style="font-size:12px;color:gray;margin-bottom:8px;">未连接</div>
+            <hr></hr>
+            <div style="display:flex;gap:10px;margin:8px 0;">
+                <div style="flex:2;"><label>提示词:</label><textarea id="summarizer-prompt" class="text_pole" rows="2"></textarea></div>
+                <div style="flex:1;"><label>手动条数:</label><input type="number" id="summarizer-max-msgs" class="text_pole" min="5" max="200"></div></input>
+                <div style="flex:1;"><label>自动间隔:</label><input type="number" id="summarizer-trigger-interval" class="text_pole" min="10" max="200"></div></input>
             </div>
-
-            <div style="display:flex; gap:10px; margin-top:10px; align-items:center;">
-                <label class="checkbox_label" style="margin:0;">
-                    <input type="checkbox" id="summarizer-auto-enabled"> 自动总结</input>
-                </label>
-                <button id="summarizer-btn" class="menu_button">手动总结</button>
+            <div style="display:flex;gap:10px;align-items:center;">
+                <label class="checkbox_label"><input type="checkbox" id="summarizer-auto-enabled"> 自动</input></label>
+                <button id="summarizer-btn" class="menu_button">总结</button>
                 <button id="summarizer-history-btn" class="menu_button">历史</button>
                 <button id="summarizer-clear-btn" class="menu_button">清空</button>
             </div>
-
-            <div id="summarizer-output" style="margin-top:10px; padding:10px; background:var(--SmartThemeBlurTintColor); border-radius:5px; max-height:200px; overflow-y:auto; white-space:pre-wrap; font-size:13px;">就绪</div>
+            <div id="summarizer-output" style="margin-top:10px;padding:10px;background:var(--SmartThemeBlurTintColor);border-radius:5px;max-height:200px;overflow-y:auto;white-space:pre-wrap;">就绪</div>
         </div>
     </div>`;
 
-    $("#extensions_settings2").append(settingsHtml);
+    $("#extensions_settings2").append(html);
 
-    $("#summarizer-api-endpoint").val(settings.apiEndpoint);
-    $("#summarizer-api-key").val(settings.apiKey);
-    $("#summarizer-model-manual").val(settings.model);
-    $("#summarizer-prompt").val(settings.summaryPrompt);
-    $("#summarizer-max-msgs").val(settings.maxMessages);
-    $("#summarizer-trigger-interval").val(settings.triggerInterval);
-    $("#summarizer-auto-enabled").prop("checked", settings.autoSummarize);
-
-    $("#summarizer-api-endpoint").on("change", function() { settings.apiEndpoint = $(this).val().trim(); saveSettings(); });
-    $("#summarizer-api-key").on("change", function() { settings.apiKey = $(this).val().trim(); saveSettings(); });
-    $("#summarizer-model-select").on("change", function() {
-        const v = $(this).val();
-        if (v) { settings.model = v; $("#summarizer-model-manual").val(v); saveSettings(); }
-    });
-    $("#summarizer-model-manual").on("change", function() { settings.model = $(this).val().trim(); saveSettings(); });
-    $("#summarizer-prompt").on("change", function() { settings.summaryPrompt = $(this).val(); saveSettings(); });
-    $("#summarizer-max-msgs").on("change", function() { settings.maxMessages = parseInt($(this).val()) || 20; saveSettings(); });
-    $("#summarizer-trigger-interval").on("change", function() { settings.triggerInterval = parseInt($(this).val()) || 20; saveSettings(); });
-    $("#summarizer-auto-enabled").on("change", function() { settings.autoSummarize = $(this).is(":checked"); saveSettings(); });
+    $("#summarizer-api-endpoint").val(s.apiEndpoint).on("change", function() { s.apiEndpoint = this.value.trim(); saveSettings(); });
+    $("#summarizer-api-key").val(s.apiKey).on("change", function() { s.apiKey = this.value.trim(); saveSettings(); });
+    $("#summarizer-model-manual").val(s.model).on("change", function() { s.model = this.value.trim(); saveSettings(); });
+    $("#summarizer-model-select").on("change", function() { if (this.value) { s.model = this.value; $("#summarizer-model-manual").val(this.value); saveSettings(); } });
+    $("#summarizer-prompt").val(s.summaryPrompt).on("change", function() { s.summaryPrompt = this.value; saveSettings(); });
+    $("#summarizer-max-msgs").val(s.maxMessages).on("change", function() { s.maxMessages = +this.value || 20; saveSettings(); });
+    $("#summarizer-trigger-interval").val(s.triggerInterval).on("change", function() { s.triggerInterval = +this.value || 20; saveSettings(); });
+    $("#summarizer-auto-enabled").prop("checked", s.autoSummarize).on("change", function() { s.autoSummarize = this.checked; saveSettings(); });
 
     $("#summarizer-fetch-models").on("click", refreshModelList);
     $("#summarizer-test-btn").on("click", testConnection);
-    $("#summarizer-btn").on("click", doManualSummarize);
+    $("#summarizer-btn").on("click", doSummarize);
     $("#summarizer-history-btn").on("click", showHistory);
     $("#summarizer-clear-btn").on("click", clearHistory);
 
-    eventSource.on(event_types.MESSAGE_RECEIVED, () => setTimeout(checkAutoSummarize, 1000));
-    eventSource.on(event_types.MESSAGE_SENT, () => setTimeout(checkAutoSummarize, 1000));
+    eventSource.on(event_types.MESSAGE_RECEIVED, () => setTimeout(checkAuto, 1000));
+    eventSource.on(event_types.MESSAGE_SENT, () => setTimeout(checkAuto, 1000));
 
-    console.log("痔疮总结机 loaded.");
+    console.log("痔疮总结机 loaded");
 });
