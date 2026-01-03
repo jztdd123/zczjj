@@ -74,25 +74,26 @@ async function doSummarize() {
 // 创建UI
 function createUI() {
     const settingsHtml = `
-        <div id="summarizer-panel" class="extension_settings">
-            <div class="inline-drawer">
-                <div class="inline-drawer-toggle inline-drawer-header">
-                    <b>痔疮总结机</b>                    <b>痔疮</bass="inline-drawer-icon fa-solid fa-circle-chevron-down"></div>
-                </div>
-                <div class="inline-drawer-content">
-                    <label for="summarizer-max-msgs">总结最近消息数量:</label>
-                    <input type="number" id="summarizer-max-msgs" class="text_pole" min="5" max="100" value="20">
+    <div id="summarizer-panel" class="extension_settings">
+        <div class="inline-drawer">
+            <div class="inline-drawer-toggle inline-drawer-header">
+                <b>痔疮总结机</b>
+                <div class="inline-drawer-icon fa-solid fa-circle-chevron-down"></div>
+            </div>
+            <div class="inline-drawer-content">
+                <label for="summarizer-max-msgs">总结最近消息数量:</label>
+                <input type="number" id="summarizer-max-msgs" class="text_pole" min="5" max="100" value="20">
 </input>
-                    <label for="summarizer-prompt">总结提示词:</label>
-                    <textarea id="summarizer-prompt" class="text_pole" rows="3"></textarea>
+                <label for="summarizer-prompt">总结提示词:</label>
+                <textarea id="summarizer-prompt" class="text_pole" rows="3"></textarea>
 
-                    <button id="summarizer-btn" class="menu_button">生成总结</button>
+                <button id="summarizer-btn" class="menu_button">生成总结</button>
 
-                    <div id="summarizer-output">点击上方按钮生成对话总结</div>
-                </div>
+                <div id="summarizer-output">点击上方按钮生成对话总结</div>
             </div>
         </div>
-    `;
+    </div>
+`;
 
     document.getElementById("extensions_settings").insertAdjacentHTML("beforeend", settingsHtml);
 
