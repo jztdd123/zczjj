@@ -1,6 +1,6 @@
 import { getContext, extension_settings } from "../../../extensions.js";
 import { eventSource, event_types, saveSettingsDebounced } from "../../../../script.js";
-import { world_info, createWorldInfoEntry, saveWorldInfo, setWIOriginalDataValue } from "../../../world-info.js";
+import { loadWorldInfo, saveWorldInfo } from "../../../world-info.js";
 
 const extensionName = "st-summarizer";
 const localStorageKey = "summarizer_credentials";
@@ -18,8 +18,8 @@ const defaultSettings = {
     model: "",
     lastSummarizedIndex: 0,
     savedSummaries: [],
-    worldBookEntryUid: null,
-    worldBookName: null
+    worldBookName: null,
+    worldBookEntryUid: null
 };
 
 function saveCredentialsLocal(endpoint, key) {
@@ -66,33 +66,28 @@ function getModelsUrl(base) {
     return base + "/v1/models";
 }
 
-// 生成时间戳名称
+// 生成时间戳
+function getTimestamp() {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}@${String(now.getHours()).padStart(2, '0')}h${String(now.getMinutes()).padStart(2, '0')}m${String(now.getSeconds()).padStart(2, '0')}s`;
+}
+
+// 生成世界书名称
+function generateWorldBookName() {
+    const context = getContext();
+    const charName = context.name2 || "Summary";
+    return `${charName}_Summaries`;
+}
+
+// 生成条目名称
 function generateEntryName() {
     const context = getContext();
     const charName = context.name2 || "Unknown";
-    const now = new Date();
-    const timestamp = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}@${String(now.getHours()).padStart(2, '0')}h${String(now.getMinutes()).padStart(2, '0')}m${String(now.getSeconds()).padStart(2, '0')}s`;
-    return `${charName} - ${timestamp}`;
+    return `${charName} - ${getTimestamp()}`;
 }
 
-// 创建或获取世界书
-async function getOrCreateWorldBook() {
-    const settings = getSettings();
-    const context = getContext();
-
-    // 检查是否已有绑定的世界书
-    if (settings.worldBookName) {
-        const existingBook = world_info.charLore?.find(w => w.name === settings.worldBookName);
-        if (existingBook) {
-            return settings.worldBookName;
-        }
-    }
-
-    // 创建新世界书名称
-    const charName = context.name2 || "Summary";
-    const bookName = `${charName}_Summaries`;
-
-    // 通过API创建世界书
+// 创建世界书
+async function createWorldBook(bookName) {
     try {
         const response = await fetch('/api/worldinfo/create', {
             method: 'POST',
@@ -100,211 +95,181 @@ async function getOrCreateWorldBook() {
             body: JSON.stringify({ name: bookName })
         });
 
-        if (!response.ok) {
-            // 可能已存在，继续使用
-            console.log("世界书可能已存在:", bookName);
-        }
-
-        settings.worldBookName = bookName;
-        saveSettings();
-
-        return bookName;
-    } catch (e) {
-        console.error("创建世界书失败:", e);
-        throw e;
-    }
-}
-
-// 绑定世界书到角色聊天
-async function bindWorldBookToChat(bookName) {
-    const context = getContext();
-
-    try {
-        // 设置聊天世界书
-        const response = await fetch('/api/worldinfo/bind', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                name: bookName,
-                avatar: context.characterId,
-                bind_type: 'chat' // 绑定到聊天而非角色
-            })
-        });
-
         if (response.ok) {
-            console.log("已绑定世界书到聊天:", bookName);
-        }
-    } catch (e) {
-        console.error("绑定世界书失败:", e);
-    }
-}
-
-// 添加总结到世界书条目
-async function addSummaryToWorldBook(summary, range) {
-    const settings = getSettings();
-
-    try {
-        const bookName = await getOrCreateWorldBook();
-
-        // 获取世界书数据
-        const response = await fetch(`/api/worldinfo/get?name=${encodeURIComponent(bookName)}`);
-        const worldData = await response.json();
-
-        const now = new Date();
-        const timeStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}@${String(now.getHours()).padStart(2, '0')}h${String(now.getMinutes()).padStart(2, '0')}m${String(now.getSeconds()).padStart(2, '0')}s`;
-
-        // 检查是否已有条目
-        let entryUid = settings.worldBookEntryUid;
-        let existingEntry = null;
-
-        if (entryUid !== null && worldData.entries) {
-            existingEntry = worldData.entries[entryUid];
-        }
-
-        const newSummaryBlock = `\n\n【${timeStr} | 消息 ${range}】\n${summary}`;
-
-        if (existingEntry) {
-            // 追加到现有条目
-            const updatedContent = existingEntry.content + newSummaryBlock;
-
-            await fetch('/api/worldinfo/edit', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    name: bookName,
-                    uid: entryUid,
-                    field: 'content',
-                    value: updatedContent
-                })
-            });
-
-            console.log("已追加总结到世界书条目");
-
+            console.log('[痔疮总结机] 世界书创建成功:', bookName);
+            return true;
         } else {
-            // 创建新条目
-            const entryName = generateEntryName();
-
-            const newEntry = {
-                key: ["总结", "summary", "记忆"],
-                keysecondary: [],
-                comment: entryName,
-                content: `【对话总结记录】\n${newSummaryBlock}`,
-                constant: true,           // 蓝灯 - 常驻
-                selective: false,
-                order: 100,
-                position: 0,
-                depth: 2,                  // D2
-                disable: false,
-                excludeRecursion: false,
-                probability: 100,
-                useProbability: false,
-                group: "",
-                scanDepth: null,
-                caseSensitive: false,
-                matchWholeWords: false,
-                automationId: "",
-                vectorized: false
-            };
-
-            const createResponse = await fetch('/api/worldinfo/create-entry', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    name: bookName,
-                    entry: newEntry
-                })
-            });
-
-            if (createResponse.ok) {
-                const result = await createResponse.json();
-                settings.worldBookEntryUid = result.uid;
-                saveSettings();
-                console.log("已创建世界书条目:", entryName, "UID:", result.uid);
-            }
-
-            // 绑定到聊天
-            await bindWorldBookToChat(bookName);
+            // 可能已存在
+            console.log('[痔疮总结机] 世界书可能已存在:', bookName);
+            return true;
         }
-
-        return true;
-
     } catch (e) {
-        console.error("添加总结到世界书失败:", e);
+        console.error('[痔疮总结机] 创建世界书失败:', e);
         return false;
     }
 }
 
-// 使用SillyTavern内置API的备用方法
-async function addSummaryToWorldBookFallback(summary, range) {
-    const settings = getSettings();
+// 绑定世界书到聊天
+async function bindWorldBookToChat(bookName) {
     const context = getContext();
 
     try {
-        const charName = context.name2 || "Unknown";
-        const now = new Date();
-        const timeStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}@${String(now.getHours()).padStart(2, '0')}h${String(now.getMinutes()).padStart(2, '0')}m${String(now.getSeconds()).padStart(2, '0')}s`;
-
-        // 使用jQuery触发世界书创建
-        const bookName = `${charName}_Summaries`;
-        const entryName = `${charName} - ${timeStr}`;
-
-        const summaryContent = `【${timeStr} | 消息 ${range}】\n${summary}`;
-
-        // 检查chat_metadata中是否有世界书
-        if (!context.chatMetadata) {
-            context.chatMetadata = {};
+        // 设置聊天的世界书
+        if (context.chatMetadata) {
+            if (!context.chatMetadata.world_info) {
+                context.chatMetadata.world_info = bookName;
+            }
         }
 
-        // 存储到chat metadata作为备用
-        if (!context.chatMetadata.summaries) {
-            context.chatMetadata.summaries = [];
-        }
-        context.chatMetadata.summaries.push({
-            time: timeStr,
-            range: range,
-            content: summary
+        // 通过API绑定
+        const response = await fetch('/api/worldinfo/bind-chat', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                name: bookName,
+                chatId: context.chatId
+            })
         });
 
-        // 尝试通过全局world_info对象
-        if (typeof world_info !== 'undefined' && world_info.data) {
-            // 查找或创建条目
-            let foundEntry = null;
-            let foundUid = null;
+        if (response.ok) {
+            console.log('[痔疮总结机] 已绑定世界书到聊天:', bookName);
+        }
 
-            for (const [uid, entry] of Object.entries(world_info.data.entries || {})) {
-                if (entry.comment && entry.comment.startsWith(charName + " - ") && entry.constant) {
-                    foundEntry = entry;
-                    foundUid = uid;
+        // 备用：直接更新chat metadata
+        if (typeof context.saveChat === 'function') {
+            await context.saveChat();
+        }
+
+        return true;
+    } catch (e) {
+        console.error('[痔疮总结机] 绑定世界书失败:', e);
+        return false;
+    }
+}
+
+// 获取下一个可用的UID
+function getNextUid(worldData) {
+    if (!worldData.entries || Object.keys(worldData.entries).length === 0) {
+        return 0;
+    }
+    const uids = Object.keys(worldData.entries).map(Number);
+    return Math.max(...uids) + 1;
+}
+
+// 添加总结到世界书
+async function addSummaryToWorldBook(summary, range) {
+    const settings = getSettings();
+
+    try {
+        // 确定世界书名称
+        let bookName = settings.worldBookName;
+        if (!bookName) {
+            bookName = generateWorldBookName();
+            settings.worldBookName = bookName;
+            saveSettings();
+        }
+
+        // 创建世界书（如果不存在）
+        await createWorldBook(bookName);
+
+        // 加载世界书数据
+        let worldData = await loadWorldInfo(bookName);
+
+        if (!worldData) {
+            // 初始化空世界书结构
+            worldData = { entries: {} };
+        }
+
+        if (!worldData.entries) {
+            worldData.entries = {};
+        }
+
+        const timestamp = getTimestamp();
+        const newSummaryBlock = `【${timestamp} | 消息 ${range}】\n${summary}`;
+
+        // 查找现有的总结条目
+        let existingEntry = null;
+        let existingUid = null;
+
+        if (settings.worldBookEntryUid !== null) {
+            existingEntry = worldData.entries[settings.worldBookEntryUid];
+            existingUid = settings.worldBookEntryUid;
+        }
+
+        // 如果没找到，尝试按comment查找
+        if (!existingEntry) {
+            const context = getContext();
+            const charName = context.name2 || "";
+
+            for (const [uid, entry] of Object.entries(worldData.entries)) {
+                if (entry.comment && entry.comment.includes(charName) && entry.constant === true) {
+                    existingEntry = entry;
+                    existingUid = uid;
+                    settings.worldBookEntryUid = uid;
                     break;
                 }
             }
-
-            if (foundEntry) {
-                // 追加内容
-                foundEntry.content += `\n\n${summaryContent}`;
-                await saveWorldInfo(world_info.name, world_info.data);
-            } else {
-                // 创建新条目
-                const newUid = await createWorldInfoEntry(world_info.name, world_info.data);
-                if (newUid !== null) {
-                    const entry = world_info.data.entries[newUid];
-                    entry.comment = entryName;
-                    entry.content = `【对话总结记录】\n\n${summaryContent}`;
-                    entry.constant = true;
-                    entry.depth = 2;
-                    entry.key = ["总结", "summary"];
-                    await saveWorldInfo(world_info.name, world_info.data);
-                    settings.worldBookEntryUid = newUid;
-                    saveSettings();
-                }
-            }
         }
 
-        console.log("总结已保存");
+        if (existingEntry) {
+            // 追加到现有条目
+            existingEntry.content = existingEntry.content + '\n\n' + newSummaryBlock;
+            console.log('[痔疮总结机] 追加总结到现有条目, UID:', existingUid);
+        } else {
+            // 创建新条目
+            const newUid = getNextUid(worldData);
+            const entryName = generateEntryName();
+
+            worldData.entries[newUid] = {
+                uid: newUid,
+                key: ["总结", "summary", "记忆"],
+                keysecondary: [],
+                comment: entryName,
+                content: `【对话总结记录】\n\n${newSummaryBlock}`,
+                constant: true,          // 蓝灯
+                selective: false,
+                vectorized: false,
+                selectiveLogic: 0,
+                addMemo: true,
+                order: 100,
+                position: 0,
+                depth: 2,                // D2
+                disable: false,
+                excludeRecursion: false,
+                preventRecursion: false,
+                probability: 100,
+                useProbability: true,
+                group: "",
+                groupOverride: false,
+                groupWeight: 100,
+                scanDepth: null,
+                caseSensitive: false,
+                matchWholeWords: false,
+                useGroupScoring: false,
+                automationId: "",
+                role: null,
+                sticky: null,
+                cooldown: null,
+                delay: null
+            };
+
+            settings.worldBookEntryUid = newUid;
+            saveSettings();
+
+            console.log('[痔疮总结机] 创建新条目:', entryName, 'UID:', newUid);
+        }
+
+        // 保存世界书（立即保存）
+        await saveWorldInfo(bookName, worldData, true);
+        console.log('[痔疮总结机] 世界书已保存');
+
+        // 绑定到聊天
+        await bindWorldBookToChat(bookName);
+
         return true;
 
     } catch (e) {
-        console.error("保存总结失败:", e);
+        console.error('[痔疮总结机] 添加总结到世界书失败:', e);
         return false;
     }
 }
@@ -381,7 +346,7 @@ async function refreshModelList() {
 function hideMessages(startIdx, endIdx) {
     const context = getContext();
     const chat = context.chat;
-    if (!chat) return;
+    if (!chat) return 0;
 
     let hiddenCount = 0;
     for (let i = startIdx; i < endIdx && i < chat.length; i++) {
@@ -509,44 +474,44 @@ async function doSummarize() {
         if (!chat) { out.textContent = "无记录"; btn.disabled = false; return; }
 
         const summary = await callAPI(`${chat}\n---\n${settings.summaryPrompt}`);
-
         const range = `${start + 1}-${len}`;
 
-        // 保存到历史
         settings.savedSummaries.push({
             time: new Date().toLocaleString(),
             range: range,
             content: summary
         });
 
+        let resultText = summary;
+
         // 保存到世界书
         if (settings.autoWorldBook) {
             out.textContent = "写入世界书...";
-            const wbResult = await addSummaryToWorldBookFallback(summary, range);
+            const wbResult = await addSummaryToWorldBook(summary, range);
             if (wbResult) {
-                out.textContent = `[已写入世界书]\n\n${summary}`;
+                resultText = `[✓ 已写入世界书: ${settings.worldBookName}]\n\n${summary}`;
             } else {
-                out.textContent = `[世界书写入失败]\n\n${summary}`;
+                resultText = `[✗ 世界书写入失败]\n\n${summary}`;
             }
-        } else {
-            out.textContent = summary;
         }
 
         // 自动隐藏
         if (settings.autoHide) {
             const hideUntil = len - settings.keepVisible;
             if (hideUntil > 0) {
-                hideMessages(0, hideUntil);
-                out.textContent = `[已隐藏 1-${hideUntil} 楼]\n\n` + out.textContent;
+                const hiddenCount = hideMessages(0, hideUntil);
+                resultText = `[已隐藏 ${hiddenCount} 条消息]\n` + resultText;
             }
         }
 
+        out.textContent = resultText;
         settings.lastSummarizedIndex = len;
         saveSettings();
         updateHideStatus();
 
     } catch (e) {
         out.textContent = "错误: " + e.message;
+        console.error('[痔疮总结机]', e);
     }
     btn.disabled = false;
 }
@@ -581,9 +546,8 @@ async function checkAuto() {
                 auto: true
             });
 
-            // 写入世界书
             if (settings.autoWorldBook) {
-                await addSummaryToWorldBookFallback(summary, range);
+                await addSummaryToWorldBook(summary, range);
             }
 
             if (settings.autoHide) {
@@ -600,7 +564,7 @@ async function checkAuto() {
             out.textContent = `[自动总结完成]\n${summary}`;
 
         } catch (e) {
-            console.error("自动总结失败", e);
+            console.error("[痔疮总结机] 自动总结失败", e);
             out.textContent = "自动总结失败: " + e.message;
         }
     }
@@ -621,7 +585,7 @@ function clearHistory() {
     s.lastSummarizedIndex = 0;
     s.worldBookEntryUid = null;
     saveSettings();
-    document.getElementById("summarizer-output").textContent = "已清空";
+    document.getElementById("summarizer-output").textContent = "已清空历史（世界书条目需手动删除）";
 }
 
 jQuery(() => {
@@ -697,5 +661,5 @@ jQuery(() => {
 
     setTimeout(updateHideStatus, 500);
 
-    console.log("痔疮总结机 loaded");
+    console.log("[痔疮总结机] loaded");
 });
