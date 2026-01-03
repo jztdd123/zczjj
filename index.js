@@ -1,5 +1,5 @@
 import { getContext, extension_settings } from "../../../extensions.js";
-import { eventSource, event_types, saveSettingsDebounced } from "../../../../script.js";
+import { eventSource, event_types, saveSettingsDebounced, saveChatConditional } from "../../../../script.js";
 
 const extensionName = "st-summarizer";
 const localStorageKey = "summarizer_credentials";
@@ -18,7 +18,9 @@ const defaultSettings = {
     lastSummarizedIndex: 0,
     savedSummaries: [],
     currentWorldBook: "",
-    currentEntryUid: null
+    currentEntryUid: null,
+    currentEntryName: "",
+    currentChatId: null
 };
 
 function saveCredentialsLocal(endpoint, key) {
@@ -65,7 +67,6 @@ function getModelsUrl(base) {
     return base + "/v1/models";
 }
 
-// 获取当前时间戳格式
 function getTimestamp() {
     const now = new Date();
     const year = now.getFullYear();
@@ -77,19 +78,130 @@ function getTimestamp() {
     return `${year}-${month}-${day}@${hour}h${min}m${sec}s`;
 }
 
-// 获取当前角色名
 function getCharacterName() {
     const context = getContext();
     return context.name2 || context.characterId || "Unknown";
 }
 
-// 获取当前聊天ID
 function getChatId() {
     const context = getContext();
     return context.chatId || null;
 }
 
-// 加载世界书
+// ============ 隐藏功能（按你给的方式重写）============
+
+async function hideMessages(startIdx, endIdx) {
+    const context = getContext();
+    const chat = context.chat;
+    if (!chat) return 0;
+
+    const start = Math.max(0, startIdx);
+    const end = Math.min(chat.length, endIdx);
+
+    if (start >= end) return 0;
+
+    let count = 0;
+    for (let i = start; i < end; i++) {
+        if (!chat[i].is_system) {
+            chat[i].is_system = true;
+            count++;
+
+            // 更新DOM
+            const messageBlock = $(`#chat .mes[mesid="${i}"]`);
+            if (messageBlock.length) {
+                messageBlock.attr('is_system', 'true');
+            }
+        }
+    }
+
+    if (count > 0) {
+        await saveChatConditional();
+        console.log(`痔疮总结机: 隐藏了 ${start + 1}-${end} 楼 (${count}条)`);
+    }
+
+    return count;
+}
+
+async function unhideAll() {
+    const context = getContext();
+    const chat = context.chat;
+    if (!chat) return;
+
+    let count = 0;
+    for (let i = 0; i < chat.length; i++) {
+        // 只恢复我们隐藏的（不是真正的系统消息）
+        if (chat[i].is_system && chat[i].mes) {
+            chat[i].is_system = false;
+            count++;
+
+            const messageBlock = $(`#chat .mes[mesid="${i}"]`);
+            if (messageBlock.length) {
+                messageBlock.attr('is_system', 'false');
+            }
+        }
+    }
+
+    if (count > 0) {
+        await saveChatConditional();
+    }
+
+    updateHideStatus();
+    document.getElementById("summarizer-output").textContent = `已取消隐藏 ${count} 条消息`;
+}
+
+async function checkContinuousHide() {
+    const settings = getSettings();
+    if (!settings.autoHide) return;
+
+    const context = getContext();
+    const chat = context.chat;
+    if (!chat || chat.length === 0) return;
+
+    const hideUntil = chat.length - settings.keepVisible;
+
+    if (hideUntil > 0) {
+        let count = 0;
+        for (let i = 0; i < hideUntil; i++) {
+            if (!chat[i].is_system) {
+                chat[i].is_system = true;
+                count++;
+
+                const messageBlock = $(`#chat .mes[mesid="${i}"]`);
+                if (messageBlock.length) {
+                    messageBlock.attr('is_system', 'true');
+                }
+            }
+        }
+
+        if (count > 0) {
+            await saveChatConditional();
+            updateHideStatus();
+        }
+    }
+}
+
+function updateHideStatus() {
+    const context = getContext();
+    const chat = context.chat;
+    if (!chat) return;
+
+    // is_system=true 且有内容的视为隐藏，is_system=false 的视为显示
+    let hidden = 0;
+    let visible = 0;
+    for (const m of chat) {
+        if (m.is_system) {
+            hidden++;
+        } else {
+            visible++;
+        }
+    }
+
+    const statusEl = document.getElementById("summarizer-hide-status");
+    if (statusEl) statusEl.textContent = `显示: ${visible} | 隐藏: ${hidden} | 总: ${chat.length}`;
+}
+
+// ============ 世界书功能 ============
+
 async function loadWorldInfo(worldName) {
     try {
         const response = await fetch('/api/worldinfo/get', {
@@ -105,7 +217,6 @@ async function loadWorldInfo(worldName) {
     }
 }
 
-// 保存世界书
 async function saveWorldInfo(worldName, data) {
     try {
         const response = await fetch('/api/worldinfo/edit', {
@@ -120,7 +231,6 @@ async function saveWorldInfo(worldName, data) {
     }
 }
 
-// 创建世界书
 async function createWorldInfo(worldName) {
     try {
         const response = await fetch('/api/worldinfo/create', {
@@ -135,7 +245,6 @@ async function createWorldInfo(worldName) {
     }
 }
 
-// 获取世界书列表
 async function getWorldInfoList() {
     try {
         const response = await fetch('/api/worldinfo/list', { method: 'GET' });
@@ -148,30 +257,17 @@ async function getWorldInfoList() {
     }
 }
 
-// 绑定世界书到当前聊天
 async function bindWorldInfoToChat(worldName) {
     try {
         const context = getContext();
 
-        // 获取当前聊天的世界书列表
-        if (!context.chatMetadata) {
-            context.chatMetadata = {};
-        }
-        if (!context.chatMetadata.world_info) {
-            context.chatMetadata.world_info = [];
-        }
+        if (!context.chatMetadata) context.chatMetadata = {};
+        if (!context.chatMetadata.world_info) context.chatMetadata.world_info = [];
 
-        // 检查是否已绑定
         if (!context.chatMetadata.world_info.includes(worldName)) {
             context.chatMetadata.world_info.push(worldName);
-
-            // 保存聊天元数据
-            if (typeof context.saveChat === 'function') {
-                await context.saveChat();
-            }
-
+            await saveChatConditional();
             console.log(`世界书 ${worldName} 已绑定到当前聊天`);
-            return true;
         }
         return true;
     } catch (e) {
@@ -180,64 +276,52 @@ async function bindWorldInfoToChat(worldName) {
     }
 }
 
-// 写入总结到世界书
 async function writeSummaryToWorldInfo(summary, range) {
     const settings = getSettings();
-    if (!settings.autoWorldInfo) return;
+    if (!settings.autoWorldInfo) return null;
 
     const charName = getCharacterName();
     const worldBookName = `${charName}_Summaries`;
 
     try {
-        // 检查世界书是否存在
         const worldList = await getWorldInfoList();
         const exists = worldList.some(w => (typeof w === 'string' ? w : w.name) === worldBookName);
 
         if (!exists) {
-            // 创建新世界书
             await createWorldInfo(worldBookName);
             console.log(`创建世界书: ${worldBookName}`);
         }
 
-        // 加载世界书
         let worldData = await loadWorldInfo(worldBookName);
-        if (!worldData) {
-            worldData = { entries: {} };
-        }
-        if (!worldData.entries) {
-            worldData.entries = {};
-        }
+        if (!worldData) worldData = { entries: {} };
+        if (!worldData.entries) worldData.entries = {};
 
-        // 查找或创建条目
         let entryUid = settings.currentEntryUid;
         let entryName = settings.currentEntryName;
-
-        // 如果没有当前条目，或者是新聊天，创建新条目
         const chatId = getChatId();
+
+        // 新聊天或没有条目时创建新的
         if (!entryUid || !worldData.entries[entryUid] || settings.currentChatId !== chatId) {
-            // 创建新条目
             const timestamp = getTimestamp();
             entryName = `${charName} - ${timestamp}`;
 
-            // 找一个新的UID
             const existingUids = Object.keys(worldData.entries).map(Number).filter(n => !isNaN(n));
             entryUid = existingUids.length > 0 ? Math.max(...existingUids) + 1 : 0;
 
-            // 创建蓝灯条目 (constant = true, depth = 2)
             worldData.entries[entryUid] = {
                 uid: entryUid,
                 key: [],
                 keysecondary: [],
                 comment: entryName,
                 content: "",
-                constant: true,        // 蓝灯 = 常驻
+                constant: true,
                 vectorized: false,
                 selective: false,
                 selectiveLogic: 0,
                 addMemo: true,
                 order: 100,
-                position: 4,           // 深度位置
-                depth: 2,              // D2
+                position: 4,
+                depth: 2,
                 disable: false,
                 excludeRecursion: false,
                 preventRecursion: false,
@@ -262,7 +346,6 @@ async function writeSummaryToWorldInfo(summary, range) {
             console.log(`创建新条目: ${entryName} (UID: ${entryUid})`);
         }
 
-        // 追加总结内容
         const entry = worldData.entries[entryUid];
         const newContent = `\n\n【${getTimestamp()}】消息 ${range}:\n${summary}`;
 
@@ -272,13 +355,8 @@ async function writeSummaryToWorldInfo(summary, range) {
             entry.content = `# ${entryName} 对话总结${newContent}`;
         }
 
-        // 保存世界书
         await saveWorldInfo(worldBookName, worldData);
-        console.log(`总结已写入世界书条目: ${entryName}`);
-
-        // 绑定到当前聊天
         await bindWorldInfoToChat(worldBookName);
-
         saveSettings();
 
         return { worldBookName, entryName };
@@ -288,6 +366,8 @@ async function writeSummaryToWorldInfo(summary, range) {
         return null;
     }
 }
+
+// ============ API功能 ============
 
 async function fetchModels() {
     const settings = getSettings();
@@ -358,81 +438,6 @@ async function refreshModelList() {
     }
 }
 
-function hideMessages(startIdx, endIdx) {
-    const context = getContext();
-    const chat = context.chat;
-    if (!chat) return 0;
-
-    let hiddenCount = 0;
-    for (let i = startIdx; i < endIdx && i < chat.length; i++) {
-        if (!chat[i].is_system && !chat[i].is_hidden) {
-            chat[i].is_hidden = true;
-            hiddenCount++;
-        }
-    }
-
-    if (hiddenCount > 0 && typeof context.saveChat === 'function') {
-        context.saveChat();
-    }
-    return hiddenCount;
-}
-
-function checkContinuousHide() {
-    const settings = getSettings();
-    if (!settings.autoHide) return;
-
-    const context = getContext();
-    const chat = context.chat;
-    if (!chat || chat.length === 0) return;
-
-    const hideUntil = chat.length - settings.keepVisible;
-    if (hideUntil > 0) {
-        let hiddenCount = 0;
-        for (let i = 0; i < hideUntil; i++) {
-            if (!chat[i].is_system && !chat[i].is_hidden) {
-                chat[i].is_hidden = true;
-                hiddenCount++;
-            }
-        }
-        if (hiddenCount > 0 && typeof context.saveChat === 'function') {
-            context.saveChat();
-            updateHideStatus();
-        }
-    }
-}
-
-function updateHideStatus() {
-    const context = getContext();
-    const chat = context.chat;
-    if (!chat) return;
-
-    const visible = chat.filter(m => !m.is_hidden && !m.is_system).length;
-    const hidden = chat.filter(m => m.is_hidden && !m.is_system).length;
-    const total = chat.filter(m => !m.is_system).length;
-
-    const statusEl = document.getElementById("summarizer-hide-status");
-    if (statusEl) statusEl.textContent = `显示: ${visible} | 隐藏: ${hidden} | 总: ${total}`;
-}
-
-function unhideAll() {
-    const context = getContext();
-    const chat = context.chat;
-    if (!chat) return;
-
-    let count = 0;
-    for (const msg of chat) {
-        if (msg.is_hidden) {
-            msg.is_hidden = false;
-            count++;
-        }
-    }
-    if (count > 0 && typeof context.saveChat === 'function') {
-        context.saveChat();
-    }
-    updateHideStatus();
-    document.getElementById("summarizer-output").textContent = `已取消隐藏 ${count} 条`;
-}
-
 function getRecentChat(start, end) {
     const chat = getContext().chat;
     if (!chat?.length) return null;
@@ -482,7 +487,6 @@ async function doSummarize() {
         if (!chat) { out.textContent = "无记录"; btn.disabled = false; return; }
 
         const summary = await callAPI(`${chat}\n---\n${settings.summaryPrompt}`);
-
         const range = `${start + 1}-${len}`;
 
         settings.savedSummaries.push({
@@ -491,17 +495,15 @@ async function doSummarize() {
             content: summary
         });
 
-        // 写入世界书
         let worldResult = null;
         if (settings.autoWorldInfo) {
             worldResult = await writeSummaryToWorldInfo(summary, range);
         }
 
-        // 隐藏
         if (settings.autoHide) {
             const hideUntil = len - settings.keepVisible;
             if (hideUntil > 0) {
-                hideMessages(0, hideUntil);
+                await hideMessages(0, hideUntil);
             }
         }
 
@@ -514,7 +516,10 @@ async function doSummarize() {
             resultText = `[已写入世界书: ${worldResult.worldBookName}]\n[条目: ${worldResult.entryName}]\n\n${summary}`;
         }
         if (settings.autoHide) {
-            resultText = `[已隐藏 1-${len - settings.keepVisible} 楼]\n` + resultText;
+            const hideUntil = len - settings.keepVisible;
+            if (hideUntil > 0) {
+                resultText = `[已隐藏 1-${hideUntil} 楼]\n` + resultText;
+            }
         }
         out.textContent = resultText;
 
@@ -528,7 +533,7 @@ async function doSummarize() {
 async function checkAuto() {
     const settings = getSettings();
 
-    if (settings.autoHide) checkContinuousHide();
+    if (settings.autoHide) await checkContinuousHide();
 
     if (!settings.autoSummarize) return;
 
@@ -553,15 +558,13 @@ async function checkAuto() {
                 auto: true
             });
 
-            // 写入世界书
             if (settings.autoWorldInfo) {
                 await writeSummaryToWorldInfo(summary, range);
             }
 
-            // 隐藏
             if (settings.autoHide) {
                 const hideUntil = len - settings.keepVisible;
-                if (hideUntil > 0) hideMessages(0, hideUntil);
+                if (hideUntil > 0) await hideMessages(0, hideUntil);
             }
 
             settings.lastSummarizedIndex = len;
