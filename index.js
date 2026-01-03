@@ -77,8 +77,7 @@ function createUI() {
         <div id="summarizer-panel" class="extension_settings">
             <div class="inline-drawer">
                 <div class="inline-drawer-toggle inline-drawer-header">
-                    <b>对话总结器</b>
-                    <div class="inline-drawer-icon fa-solid fa-circle-chevron-down"></div>
+                    <b>痔疮总结机</b>                    <b>痔疮</bass="inline-drawer-icon fa-solid fa-circle-chevron-down"></div>
                 </div>
                 <div class="inline-drawer-content">
                     <label for="summarizer-max-msgs">总结最近消息数量:</label>
