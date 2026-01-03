@@ -16,12 +16,10 @@ const defaultSettings = {
     model: "",
     lastSummarizedIndex: 0,
     savedSummaries: [],
-    // 新增：提取规则
     extractRules: [],
     useExtraction: false
 };
 
-// ==================== 凭证存储 ====================
 function saveCredentialsLocal(endpoint, key) {
     localStorage.setItem(localStorageKey, JSON.stringify({ apiEndpoint: endpoint, apiKey: key }));
 }
@@ -51,7 +49,6 @@ function saveSettings() {
     saveSettingsDebounced();
 }
 
-// ==================== API相关 ====================
 function getCompletionsUrl(base) {
     base = base.trim().replace(/\/+$/, "");
     if (base.endsWith("/chat/completions")) return base;
@@ -113,7 +110,7 @@ async function testConnection() {
 
 async function refreshModelList() {
     const sel = document.getElementById("summarizer-model-select");
-    const status = document.getElementById("summarizer-status");
+    const status = document.getElementById("summarizer-status");</'`**>
     sel.innerHTML = '<option>加载中...</option>';
     status.textContent = "获取模型...";
     status.style.color = "orange";
@@ -136,7 +133,6 @@ async function refreshModelList() {
     }
 }
 
-// ==================== 内容提取引擎 ====================
 function applyExtractionRules(text) {
     const settings = getSettings();
     if (!settings.useExtraction || settings.extractRules.length === 0) {
@@ -146,15 +142,12 @@ function applyExtractionRules(text) {
     let processedText = text;
     const extractedParts = [];
 
-    // 第一步：应用排除规则
     const excludeRules = settings.extractRules.filter(r => r.type === 'exclude' || r.type === 'regex-exclude');
     for (const rule of excludeRules) {
         if (rule.type === 'exclude') {
-            // 标签排除
             const tagRegex = new RegExp(`<${rule.value}[^>]*>[\\s\\S]*?</${rule.value}[^><\\/${rule.value}>`, 'gi');
             processedText = processedText.replace(tagRegex, '');
         } else if (rule.type === 'regex-exclude') {
-            // 正则排除
             try {
                 const regex = new RegExp(rule.value, 'gi');
                 processedText = processedText.replace(regex, '');
@@ -164,20 +157,17 @@ function applyExtractionRules(text) {
         }
     }
 
-    // 第二步：应用包含规则
     const includeRules = settings.extractRules.filter(r => r.type === 'include' || r.type === 'regex-include');
 
     if (includeRules.length > 0) {
         for (const rule of includeRules) {
-            if (rule.type === 'include') {
-                // 标签包含</\\>
+            if (rule.type === 'include') {</\\>
                 const tagRegex = new RegExp(`<${rule.value}[^>]*>([\\s\\S]*?)</${rule.value}[^><\\/${rule.value}>`, 'gi');
                 let match;
                 while ((match = tagRegex.exec(processedText)) !== null) {
                     extractedParts.push(match[1].trim());
                 }
             } else if (rule.type === 'regex-include') {
-                // 正则包含 - 提取第一个捕获组
                 try {
                     const regex = new RegExp(rule.value, 'gi');
                     let match;
@@ -199,7 +189,6 @@ function applyExtractionRules(text) {
     return processedText;
 }
 
-// 预设规则
 const presetRules = {
     'game-loadall': {
         name: 'game.loadAll格式',
@@ -233,7 +222,6 @@ function addPresetRule(presetKey) {
     if (!preset) return;
 
     preset.rules.forEach(rule => {
-        // 避免重复添加
         const exists = settings.extractRules.some(r => r.type === rule.type && r.value === rule.value);
         if (!exists) {
             settings.extractRules.push({ ...rule });
@@ -303,7 +291,6 @@ function escapeHtml(str) {
     return str.replace(/&/g, '&').replace(/</g, '<').replace(/>/g, '>');
 }
 
-// 测试提取
 function testExtraction() {
     const settings = getSettings();
     const context = getContext();
@@ -314,7 +301,6 @@ function testExtraction() {
         return;
     }
 
-    // 取最后一条消息测试
     const lastMsg = chat[chat.length - 1];
     const original = lastMsg.mes || "";
     const extracted = applyExtractionRules(original);
@@ -324,7 +310,6 @@ function testExtraction() {
         `=== 提取后 (${extracted.length}字) ===\n${extracted.slice(0, 500)}${extracted.length > 500 ? '...' : ''}`;
 }
 
-// ==================== 消息隐藏 ====================
 function hideMessages(startIdx, endIdx) {
     const context = getContext();
     const chat = context.chat;
@@ -406,7 +391,6 @@ function unhideAll() {
     document.getElementById("summarizer-output").textContent = `已取消隐藏 ${count} 条消息`;
 }
 
-// ==================== 聊天提取 ====================
 function getRecentChat(start, end) {
     const chat = getContext().chat;
     if (!chat?.length) return null;
@@ -419,7 +403,6 @@ function getRecentChat(start, end) {
 
         let content = m.mes || "";
 
-        // 应用提取规则
         if (settings.useExtraction && settings.extractRules.length > 0) {
             content = applyExtractionRules(content);
         }
@@ -567,12 +550,10 @@ function clearHistory() {
     document.getElementById("summarizer-output").textContent = "已清空";
 }
 
-// ==================== 初始化 ====================
 jQuery(() => {
     loadSettings();
     const s = getSettings();
 
-    // 全局函数暴露给onclick使用
     window.summarizerRemoveRule = removeRule;
 
     const html = `
@@ -583,28 +564,26 @@ jQuery(() => {
         </div>
         <div class="inline-drawer-content">
 
-            </!-->
             <div style="display:flex;gap:10px;margin-bottom:8px;">
-                <div style="flex:1;"><label>API地址:</label><input type="text" id="summarizer-api-endpoint" class="text_pole" placeholder="https://xxx/v1"></input></input></div>
-                <div style="flex:1;"><label>API密钥:</label><input type="password" id="summarizer-api-key" class="text_pole"></input></input></div>
+                <div style="flex:1;"><label>API地址:</label><input type="text" id="summarizer-api-endpoint" class="text_pole" placeholder="https://xxx/v1"></div></input>
+                <div style="flex:1;"><label>API密钥:</label><input type="password" id="summarizer-api-key" class="text_pole"></div></input>
             </div>
             <div style="display:flex;gap:10px;align-items:end;margin-bottom:8px;">
                 <div style="flex:1;"><label>模型:</label><select id="summarizer-model-select" class="text_pole"><option>--</option></select></div>
-                <div style="flex:1;"><label>手动:</label><input type="text" id="summarizer-model-manual" class="text_pole"></input></input></div>
+                <div style="flex:1;"><label>手动:</label><input type="text" id="summarizer-model-manual" class="text_pole"></div></input>
                 <button id="summarizer-fetch-models" class="menu_button">获取</button>
                 <button id="summarizer-test-btn" class="menu_button">测试</button>
             </div>
             <div id="summarizer-status" style="font-size:12px;color:gray;margin-bottom:8px;">未连接</div>
 
-            <hr></hr>
-
-            </!-->
+            <hr>
+</hr>
             <details style="margin:8px 0;">
                 <summary style="cursor:pointer;font-weight:bold;">📋 内容提取规则</summary>
                 <div style="padding:8px;background:rgba(0,0,0,0.2);border-radius:5px;margin-top:5px;">
 
                     <label class="checkbox_label" style="margin-bottom:8px;">
-                        <input type="checkbox" id="summarizer-use-extraction"> 启用提取规则
+                        <input type="checkbox" id="summarizer-use-extraction"> 启用提取规则</input>
                     </label>
 
                     <div style="margin-bottom:8px;">
@@ -643,19 +622,18 @@ jQuery(() => {
                 </div>
             </details>
 
-            <hr></hr>
-
-            </!-->
+            <hr>
+</hr>
             <div style="display:flex;gap:10px;margin:8px 0;">
                 <div style="flex:2;"><label>提示词:</label><textarea id="summarizer-prompt" class="text_pole" rows="2"></textarea></div>
-                <div style="flex:1;"><label>总结条数:</label><input type="number" id="summarizer-max-msgs" class="text_pole" min="5" max="200"></input></div>
+                <div style="flex:1;"><label>总结条数:</label><input type="number" id="summarizer-max-msgs" class="text_pole" min="5" max="200"></div></input>
             </div>
             <div style="display:flex;gap:10px;margin:8px 0;">
-                <div style="flex:1;"><label>自动间隔:</label><input type="number" id="summarizer-trigger-interval" class="text_pole" min="10" max="200"></input></div>
-                <div style="flex:1;"><label>保留显示:</label><input type="number" id="summarizer-keep-visible" class="text_pole" min="1" max="100"></input></div>
+                <div style="flex:1;"><label>自动间隔:</label><input type="number" id="summarizer-trigger-interval" class="text_pole" min="10" max="200"></div></input>
+                <div style="flex:1;"><label>保留显示:</label><input type="number" id="summarizer-keep-visible" class="text_pole" min="1" max="100"></div></input>
             </div>
             <div style="display:flex;gap:15px;align-items:center;margin:8px 0;">
-                <label class="checkbox_label"><input type="checkbox" id="summarizer-auto-enabled"> 自动总结</label>
+                <label class="checkbox_label"><input type="checkbox" id="summarizer-auto-enabled"> 自动总结</input></label>
                 <label class="checkbox_label"><input type="checkbox" id="summarizer-auto-hide"> 自动隐藏</label>
             </div>
 
@@ -674,7 +652,6 @@ jQuery(() => {
 
     $("#extensions_settings2").append(html);
 
-    // 填充值
     $("#summarizer-api-endpoint").val(s.apiEndpoint).on("change", function() { s.apiEndpoint = this.value.trim(); saveSettings(); });
     $("#summarizer-api-key").val(s.apiKey).on("change", function() { s.apiKey = this.value.trim(); saveSettings(); });
     $("#summarizer-model-manual").val(s.model).on("change", function() { s.model = this.value.trim(); saveSettings(); });
@@ -687,17 +664,13 @@ jQuery(() => {
     $("#summarizer-auto-hide").prop("checked", s.autoHide).on("change", function() { s.autoHide = this.checked; saveSettings(); });
     $("#summarizer-use-extraction").prop("checked", s.useExtraction).on("change", function() { s.useExtraction = this.checked; saveSettings(); });
 
-    // API按钮
     $("#summarizer-fetch-models").on("click", refreshModelList);
     $("#summarizer-test-btn").on("click", testConnection);
-
-    // 主功能按钮
     $("#summarizer-btn").on("click", doSummarize);
     $("#summarizer-history-btn").on("click", showHistory);
     $("#summarizer-clear-btn").on("click", clearHistory);
     $("#summarizer-unhide-btn").on("click", unhideAll);
 
-    // 提取规则按钮
     $("#preset-game-loadall").on("click", () => addPresetRule('game-loadall'));
     $("#preset-html-comment").on("click", () => addPresetRule('html-comment'));
     $("#preset-content-tag").on("click", () => addPresetRule('content-tag'));
@@ -713,10 +686,8 @@ jQuery(() => {
     $("#summarizer-test-extract").on("click", testExtraction);
     $("#summarizer-clear-rules").on("click", clearAllRules);
 
-    // 初始化规则列表
     renderRulesList();
 
-    // 监听消息事件
     eventSource.on(event_types.MESSAGE_RECEIVED, () => setTimeout(checkAuto, 1000));
     eventSource.on(event_types.MESSAGE_SENT, () => setTimeout(checkAuto, 1000));
 
