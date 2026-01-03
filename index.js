@@ -1,5 +1,4 @@
 import { getContext, extension_settings, saveSettingsDebounced } from "../../../extensions.js";
-import { eventSource, event_types } from "../../../../script.js";
 
 const extensionName = "st-summarizer";
 
@@ -18,7 +17,6 @@ function loadSettings() {
     if (Object.keys(extension_settings[extensionName]).length === 0) {
         Object.assign(extension_settings[extensionName], defaultSettings);
     }
-    // 确保新字段存在
     for (const key in defaultSettings) {
         if (extension_settings[extensionName][key] === undefined) {
             extension_settings[extensionName][key] = defaultSettings[key];
@@ -34,7 +32,6 @@ function saveSettings() {
     saveSettingsDebounced();
 }
 
-// 获取指定范围的聊天记录
 function getChatRange(startIndex, endIndex) {
     const context = getContext();
     const chat = context.chat;
@@ -54,7 +51,6 @@ function getChatRange(startIndex, endIndex) {
     return chatText;
 }
 
-// 使用自定义API调用
 async function callCustomApi(prompt) {
     const settings = getSettings();
 
@@ -92,12 +88,9 @@ async function callCustomApi(prompt) {
 
     const data = await response.json();
 
-    // 兼容OpenAI格式
     if (data.choices && data.choices[0]) {
         return data.choices[0].message?.content || data.choices[0].text || "";
     }
-
-    // 兼容其他格式
     if (data.response) return data.response;
     if (data.content) return data.content;
     if (data.text) return data.text;
@@ -105,7 +98,8 @@ async function callCustomApi(prompt) {
     return JSON.stringify(data);
 }
 
-// 执行总结
+let lastSummarizedIndex = 0;
+
 async function doSummarize(startIndex, endIndex, isAuto = false) {
     const settings = getSettings();
     const outputDiv = document.getElementById("summarizer-output");
@@ -119,7 +113,6 @@ async function doSummarize(startIndex, endIndex, isAuto = false) {
         const context = getContext();
         const chat = context.chat;
 
-        // 如果没指定范围，用最近的消息
         if (startIndex === undefined) {
             endIndex = chat.length;
             startIndex = Math.max(0, endIndex - settings.autoInterval);
@@ -139,13 +132,12 @@ async function doSummarize(startIndex, endIndex, isAuto = false) {
         if (settings.customApiUrl) {
             summary = await callCustomApi(prompt);
         } else {
-            // fallback到主API（需要导入generateQuietPrompt）
-            const { generateQuietPrompt } = await import("../../../../script.js");
-            summary = await generateQuietPrompt(prompt, false, false);
+            if (outputDiv) outputDiv.textContent = "请先配置自定义API地址";
+            if (btn) btn.disabled = false;
+            return null;
         }
 
         if (summary) {
-            // 存储总结
             const summaryRecord = {
                 timestamp: Date.now(),
                 startIndex: startIndex,
@@ -174,9 +166,6 @@ async function doSummarize(startIndex, endIndex, isAuto = false) {
     }
 }
 
-// 检查是否需要自动总结
-let lastSummarizedIndex = 0;
-
 function checkAutoSummarize() {
     const settings = getSettings();
     if (!settings.autoEnabled) return;
@@ -188,21 +177,17 @@ function checkAutoSummarize() {
     const currentLength = chat.length;
     const interval = settings.autoInterval;
 
-    // 计算应该在哪个位置触发总结
     const nextTrigger = Math.floor(lastSummarizedIndex / interval) * interval + interval;
 
     if (currentLength >= nextTrigger && lastSummarizedIndex < nextTrigger) {
         const startIndex = nextTrigger - interval;
         const endIndex = nextTrigger;
-
         console.log(`痔疮总结机: 触发自动总结 (${startIndex + 1}-${endIndex})`);
-
         doSummarize(startIndex, endIndex, true);
         lastSummarizedIndex = endIndex;
     }
 }
 
-// 显示历史总结
 function showSummaryHistory() {
     const settings = getSettings();
     const outputDiv = document.getElementById("summarizer-output");
@@ -221,7 +206,6 @@ function showSummaryHistory() {
     outputDiv.textContent = historyText;
 }
 
-// 清空历史
 function clearHistory() {
     const settings = getSettings();
     settings.summaries = [];
@@ -231,104 +215,100 @@ function clearHistory() {
 }
 
 jQuery(async () => {
-    loadSettings();
-    const settings = getSettings();
+    try {
+        loadSettings();
+        const settings = getSettings();
 
-    const settingsHtml = `
-    <div class="inline-drawer">
-        <div class="inline-drawer-toggle inline-drawer-header">
-            <b>痔疮总结机</b>
-            <div class="inline-drawer-icon fa-solid fa-circle-chevron-down"></div>
-        </div>
-        <div class="inline-drawer-content">
-            <h4>自定义API设置</h4>
-            <label for="summarizer-api-url">API地址:</label>
-            <input type="text" id="summarizer-api-url" class="text_pole" placeholder="https://api.example.com/v1/chat/completions"></input>
-</input>
-            <label for="summarizer-api-key">API Key:</label>
-            <input type="password" id="summarizer-api-key" class="text_pole" placeholder="sk-xxx"></input>
-
-            <label for="summarizer-model">模型名称:</label>
-            <input type="text" id="summarizer-model" class="text_pole" placeholder="gpt-3.5-turbo"></input>
-
-            <hr></hr>
-            <h4>自动总结</h4>
-            <label class="checkbox_label">
-                <input type="checkbox" id="summarizer-auto-enabled">
-                启用自动总结
-            </label>
-
-            <label for="summarizer-interval">每隔多少条消息总结:</label>
-            <input type="number" id="summarizer-interval" class="text_pole" min="5" max="200" value="20"></input>
-
-            <hr></hr>
-            <h4>总结提示词</h4>
-            <textarea id="summarizer-prompt" class="text_pole" rows="3"></textarea>
-
-            <div class="flex-container">
-                <button id="summarizer-btn" class="menu_button">手动总结</button>
-                <button id="summarizer-history-btn" class="menu_button">查看历史</button>
-                <button id="summarizer-clear-btn" class="menu_button">清空历史</button>
+        const settingsHtml = `
+        <div class="inline-drawer">
+            <div class="inline-drawer-toggle inline-drawer-header">
+                <b>痔疮总结机</b>
+                <div class="inline-drawer-icon fa-solid fa-circle-chevron-down"></div>
             </div>
+            <div class="inline-drawer-content">
+                <h4>自定义API设置</h4>
+                <label for="summarizer-api-url">API地址:</label>
+                <input type="text" id="summarizer-api-url" class="text_pole" placeholder="https://api.example.com/v1/chat/completions"></input>
+                <label for="summarizer-api-key">API Key:</label>
+                <input type="password" id="summarizer-api-key" class="text_pole" placeholder="sk-xxx"></input>
+                <label for="summarizer-model">模型名称:</label>
+                <input type="text" id="summarizer-model" class="text_pole" placeholder="gpt-3.5-turbo"></input>
+                <hr></hr>
+                <h4>自动总结</h4>
+                <label class="checkbox_label">
+                    <input type="checkbox" id="summarizer-auto-enabled">
+                    启用自动总结</input>
+                </label>
+                <label for="summarizer-interval">每隔多少条消息总结:</label>
+                <input type="number" id="summarizer-interval" class="text_pole" min="5" max="200" value="20">
+                <hr>
+                <h4>总结提示词</h4>
+                <textarea id="summarizer-prompt" class="text_pole" rows="3"></textarea>
+                <div style="display:flex; gap:5px; margin-top:10px;">
+                    <button id="summarizer-btn" class="menu_button">手动总结</button>
+                    <button id="summarizer-history-btn" class="menu_button">查看历史</button>
+                    <button id="summarizer-clear-btn" class="menu_button">清空历史</button>
+                </div>
+                <div id="summarizer-output" style="margin-top:10px; padding:10px; background:rgba(0,0,0,0.3); border-radius:5px; white-space:pre-wrap; max-height:300px; overflow-y:auto;">点击按钮生成对话总结</div>
+            </div>
+        </div>`;
 
-            <div id="summarizer-output">点击按钮生成对话总结</div>
-        </div>
-    </div>`;
+        $("#extensions_settings2").append(settingsHtml);
 
-    $("#extensions_settings2").append(settingsHtml);
+        $("#summarizer-api-url").val(settings.customApiUrl);
+        $("#summarizer-api-key").val(settings.customApiKey);
+        $("#summarizer-model").val(settings.customModel);
+        $("#summarizer-auto-enabled").prop("checked", settings.autoEnabled);
+        $("#summarizer-interval").val(settings.autoInterval);
+        $("#summarizer-prompt").val(settings.summaryPrompt);
 
-    // 绑定值
-    $("#summarizer-api-url").val(settings.customApiUrl);
-    $("#summarizer-api-key").val(settings.customApiKey);
-    $("#summarizer-model").val(settings.customModel);
-    $("#summarizer-auto-enabled").prop("checked", settings.autoEnabled);
-    $("#summarizer-interval").val(settings.autoInterval);
-    $("#summarizer-prompt").val(settings.summaryPrompt);
+        $("#summarizer-api-url").on("change", function() {
+            settings.customApiUrl = $(this).val();
+            saveSettings();
+        });
 
-    // 绑定事件
-    $("#summarizer-api-url").on("change", function() {
-        settings.customApiUrl = $(this).val();
-        saveSettings();
-    });
+        $("#summarizer-api-key").on("change", function() {
+            settings.customApiKey = $(this).val();
+            saveSettings();
+        });
 
-    $("#summarizer-api-key").on("change", function() {
-        settings.customApiKey = $(this).val();
-        saveSettings();
-    });
+        $("#summarizer-model").on("change", function() {
+            settings.customModel = $(this).val();
+            saveSettings();
+        });
 
-    $("#summarizer-model").on("change", function() {
-        settings.customModel = $(this).val();
-        saveSettings();
-    });
+        $("#summarizer-auto-enabled").on("change", function() {
+            settings.autoEnabled = $(this).prop("checked");
+            saveSettings();
+        });
 
-    $("#summarizer-auto-enabled").on("change", function() {
-        settings.autoEnabled = $(this).prop("checked");
-        saveSettings();
-        console.log("痔疮总结机: 自动总结", settings.autoEnabled ? "已启用" : "已禁用");
-    });
+        $("#summarizer-interval").on("change", function() {
+            settings.autoInterval = parseInt($(this).val()) || 20;
+            saveSettings();
+        });
 
-    $("#summarizer-interval").on("change", function() {
-        settings.autoInterval = parseInt($(this).val()) || 20;
-        saveSettings();
-    });
+        $("#summarizer-prompt").on("change", function() {
+            settings.summaryPrompt = $(this).val();
+            saveSettings();
+        });
 
-    $("#summarizer-prompt").on("change", function() {
-        settings.summaryPrompt = $(this).val();
-        saveSettings();
-    });
+        $("#summarizer-btn").on("click", () => doSummarize());
+        $("#summarizer-history-btn").on("click", showSummaryHistory);
+        $("#summarizer-clear-btn").on("click", clearHistory);
 
-    $("#summarizer-btn").on("click", () => doSummarize());
-    $("#summarizer-history-btn").on("click", showSummaryHistory);
-    $("#summarizer-clear-btn").on("click", clearHistory);
+        // 用轮询代替事件监听，更稳定
+        let lastChatLength = 0;
+        setInterval(() => {
+            const context = getContext();
+            if (context.chat && context.chat.length !== lastChatLength) {
+                lastChatLength = context.chat.length;
+                checkAutoSummarize();
+            }
+        }, 2000);
 
-    // 监听消息事件
-    eventSource.on(event_types.MESSAGE_RECEIVED, () => {
-        checkAutoSummarize();
-    });
+        console.log("痔疮总结机 loaded.");
 
-    eventSource.on(event_types.MESSAGE_SENT, () => {
-        checkAutoSummarize();
-    });
-
-    console.log("痔疮总结机 loaded. 自动总结:", settings.autoEnabled ? "启用" : "禁用");
+    } catch (err) {
+        console.error("痔疮总结机加载失败:", err);
+    }
 });
