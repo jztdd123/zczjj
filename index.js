@@ -15,9 +15,12 @@ const defaultSettings = {
     apiKey: "",
     model: "",
     lastSummarizedIndex: 0,
-    savedSummaries: []
+    savedSummaries: [],
+    extractionRules: [],
+    blacklist: ""
 };
 
+// ==================== 凭证存储 ====================
 function saveCredentialsLocal(endpoint, key) {
     localStorage.setItem(localStorageKey, JSON.stringify({ apiEndpoint: endpoint, apiKey: key }));
 }
@@ -27,6 +30,7 @@ function loadCredentialsLocal() {
     catch { return null; }
 }
 
+// ==================== 设置管理 ====================
 function loadSettings() {
     extension_settings[extensionName] = extension_settings[extensionName] || {};
     for (const key in defaultSettings) {
@@ -47,6 +51,181 @@ function saveSettings() {
     saveSettingsDebounced();
 }
 
+// ==================== 标签提取系统 ====================
+function applyExtractionRules(text) {
+    const settings = getSettings();
+    const rules = settings.extractionRules || [];
+
+    if (rules.length === 0) return text;
+
+    let processedText = text;
+
+    // 第一步：应用所有排除规则
+    const excludeRules = rules.filter(r => r.type === 'exclude');
+    const regexExcludeRules = rules.filter(r => r.type === 'regex-exclude');
+
+    for (const rule of excludeRules) {
+        const tagName = rule.value.trim();
+        if (!tagName) continue;
+        const regex = new RegExp(`<${tagName}[^>]*>[\\s\\S]*?</${tagName}[^><\\/${tagName}>`, 'gi');
+        processedText = processedText.replace(regex, '');
+    }
+
+    for (const rule of regexExcludeRules) {
+        try {
+            const regex = new RegExp(rule.value, 'gi');
+            processedText = processedText.replace(regex, '');
+        } catch (e) {
+            console.error("正则排除错误:", e);
+        }
+    }
+
+    // 第二步：应用所有包含规则
+    const includeRules = rules.filter(r => r.type === 'include');
+    const regexIncludeRules = rules.filter(r => r.type === 'regex-include');
+
+    if (includeRules.length === 0 && regexIncludeRules.length === 0) {
+        // 没有包含规则，返回排除后的全部内容
+        return applyBlacklist(processedText);
+    }
+
+    let extractedParts = [];
+
+    // 标签包含
+    for (const rule of includeRules) {
+        const tagName = rule.value.trim();
+        if (!tagName) continue;</\\>
+        const regex = new RegExp(`<${tagName}[^>]*>([\\s\\S]*?)</${tagName}[^><\\/${tagName}>`, 'gi');
+        let match;
+        while ((match = regex.exec(processedText)) !== null) {
+            extractedParts.push(match[1]);
+        }
+    }
+
+    // 正则包含（提取第一个捕获组）
+    for (const rule of regexIncludeRules) {
+        try {
+            const regex = new RegExp(rule.value, 'gi');
+            let match;
+            while ((match = regex.exec(processedText)) !== null) {
+                if (match[1]) {
+                    extractedParts.push(match[1]);
+                } else {
+                    extractedParts.push(match[0]);
+                }
+            }
+        } catch (e) {
+            console.error("正则包含错误:", e);
+        }
+    }
+
+    const result = extractedParts.join('\n\n');
+    return applyBlacklist(result);
+}
+
+function applyBlacklist(text) {
+    const settings = getSettings();
+    const blacklist = settings.blacklist?.trim();
+    if (!blacklist) return text;
+
+    const words = blacklist.split('\n').map(w => w.trim()).filter(w => w);
+    let result = text;
+    for (const word of words) {
+        result = result.split(word).join('');
+    }
+    return result;
+}
+
+// ==================== 规则UI管理 ====================
+function renderRulesList() {
+    const settings = getSettings();
+    const container = document.getElementById("summarizer-rules-list");
+    container.innerHTML = "";
+
+    if (settings.extractionRules.length === 0) {</\\>
+        container.innerHTML = '<div style="color:#888;font-size:12px;">暂无规则（将处理全部内容）</div>';
+        return;
+    }
+
+    settings.extractionRules.forEach((rule, index) => {
+        const typeLabels = {
+            'include': '包含',
+            'exclude': '排除',
+            'regex-include': '正则包含',
+            'regex-exclude': '正则排除'
+        };
+        const typeColors = {
+            'include': '#4CAF50',
+            'exclude': '#f44336',
+            'regex-include': '#2196F3',
+            'regex-exclude': '#FF9800'
+        };
+
+        const ruleEl = document.createElement("div");
+        ruleEl.style.cssText = "display:flex;align-items:center;gap:8px;padding:5px;background:rgba(255,255,255,0.05);border-radius:4px;margin-bottom:4px;";
+        ruleEl.innerHTML = `
+            <span style="background:${typeColors[rule.type]};color:#fff;padding:2px 6px;border-radius:3px;font-size:11px;">${typeLabels[rule.type]}</span>
+            <code style="flex:1;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${rule.value}</code>
+            <button class="menu_button" data-index="${index}" style="padding:2px 8px;">删</button>
+        `;
+        container.appendChild(ruleEl);
+    });
+
+    // 绑定删除按钮
+    container.querySelectorAll("button").forEach(btn => {
+        btn.addEventListener("click", function() {
+            const idx = parseInt(this.dataset.index);
+            settings.extractionRules.splice(idx, 1);
+            saveSettings();
+            renderRulesList();
+        });
+    });
+}
+
+function addRule() {
+    const settings = getSettings();
+    const typeEl = document.getElementById("summarizer-rule-type");
+    const valueEl = document.getElementById("summarizer-rule-value");
+
+    const type = typeEl.value;
+    const value = valueEl.value.trim();
+
+    if (!value) {
+        alert("请输入规则内容");
+        return;
+    }
+
+    // 验证正则
+    if (type.includes('regex')) {
+        try {
+            new RegExp(value);
+        } catch (e) {
+            alert("正则表达式格式错误: " + e.message);
+            return;
+        }
+    }
+
+    settings.extractionRules.push({ type, value });
+    saveSettings();
+    renderRulesList();
+    valueEl.value = "";
+}
+
+function addPresetRule(type, value) {
+    const settings = getSettings();
+    settings.extractionRules.push({ type, value });
+    saveSettings();
+    renderRulesList();
+}
+
+function clearAllRules() {
+    const settings = getSettings();
+    settings.extractionRules = [];
+    saveSettings();
+    renderRulesList();
+}
+
+// ==================== API相关 ====================
 function getCompletionsUrl(base) {
     base = base.trim().replace(/\/+$/, "");
     if (base.endsWith("/chat/completions")) return base;
@@ -131,7 +310,7 @@ async function refreshModelList() {
     }
 }
 
-// 隐藏消息
+// ==================== 消息隐藏 ====================
 function hideMessages(startIdx, endIdx) {
     const context = getContext();
     const chat = context.chat;
@@ -145,18 +324,12 @@ function hideMessages(startIdx, endIdx) {
         }
     }
 
-    if (hiddenCount > 0) {
-        // 刷新聊天显示
-        if (typeof context.saveChat === 'function') {
-            context.saveChat();
-        }
-        console.log(`痔疮总结机: 隐藏了 ${startIdx + 1}-${endIdx} 楼 (${hiddenCount}条)`);
+    if (hiddenCount > 0 && typeof context.saveChat === 'function') {
+        context.saveChat();
     }
-
     return hiddenCount;
 }
 
-// 持续隐藏检查 - 保持只显示最新N条
 function checkContinuousHide() {
     const settings = getSettings();
     if (!settings.autoHide) return;
@@ -165,12 +338,7 @@ function checkContinuousHide() {
     const chat = context.chat;
     if (!chat || chat.length === 0) return;
 
-    const keepVisible = settings.keepVisible;
-    const totalMessages = chat.length;
-
-    // 计算应该隐藏到哪里
-    const hideUntil = totalMessages - keepVisible;
-
+    const hideUntil = chat.length - settings.keepVisible;
     if (hideUntil > 0) {
         let hiddenCount = 0;
         for (let i = 0; i < hideUntil; i++) {
@@ -179,17 +347,13 @@ function checkContinuousHide() {
                 hiddenCount++;
             }
         }
-
-        if (hiddenCount > 0) {
-            if (typeof context.saveChat === 'function') {
-                context.saveChat();
-            }
+        if (hiddenCount > 0 && typeof context.saveChat === 'function') {
+            context.saveChat();
             updateHideStatus();
         }
     }
 }
 
-// 更新隐藏状态显示
 function updateHideStatus() {
     const context = getContext();
     const chat = context.chat;
@@ -205,7 +369,6 @@ function updateHideStatus() {
     }
 }
 
-// 取消隐藏所有
 function unhideAll() {
     const context = getContext();
     const chat = context.chat;
@@ -227,13 +390,17 @@ function unhideAll() {
     document.getElementById("summarizer-output").textContent = `已取消隐藏 ${count} 条消息`;
 }
 
+// ==================== 聊天获取与处理 ====================
 function getRecentChat(start, end) {
     const chat = getContext().chat;
     if (!chat?.length) return null;
     let text = "";
     chat.slice(start, end).forEach(m => {
         if (m.is_system) return;
-        text += `${m.is_user ? "用户" : m.name}: ${m.mes}\n\n`;
+        const content = applyExtractionRules(m.mes);
+        if (content.trim()) {
+            text += `${m.is_user ? "用户" : m.name}: ${content}\n\n`;
+        }
     });
     return text;
 }
@@ -261,6 +428,7 @@ async function callAPI(prompt) {
     return data.choices?.[0]?.message?.content || "失败";
 }
 
+// ==================== 总结功能 ====================
 async function doSummarize() {
     const settings = getSettings();
     const out = document.getElementById("summarizer-output");
@@ -284,7 +452,6 @@ async function doSummarize() {
             content: summary
         });
 
-        // 总结完成后执行隐藏
         if (settings.autoHide) {
             const hideUntil = len - settings.keepVisible;
             if (hideUntil > 0) {
@@ -306,12 +473,10 @@ async function doSummarize() {
 async function checkAuto() {
     const settings = getSettings();
 
-    // 持续隐藏检查
     if (settings.autoHide) {
         checkContinuousHide();
     }
 
-    // 自动总结检查
     if (!settings.autoSummarize) return;
 
     const len = getContext().chat?.length || 0;
@@ -334,7 +499,6 @@ async function checkAuto() {
                 auto: true
             });
 
-            // 自动隐藏
             if (settings.autoHide) {
                 const hideUntil = len - settings.keepVisible;
                 if (hideUntil > 0) {
@@ -372,6 +536,30 @@ function clearHistory() {
     document.getElementById("summarizer-output").textContent = "已清空";
 }
 
+// 测试提取规则
+function testExtraction() {
+    const context = getContext();
+    const chat = context.chat;
+    if (!chat || chat.length === 0) {
+        document.getElementById("summarizer-output").textContent = "无聊天记录";
+        return;
+    }
+
+    // 取最后一条非系统消息测试
+    const lastMsg = [...chat].reverse().find(m => !m.is_system);
+    if (!lastMsg) {
+        document.getElementById("summarizer-output").textContent = "无有效消息";
+        return;
+    }
+
+    const original = lastMsg.mes;
+    const processed = applyExtractionRules(original);
+
+    document.getElementById("summarizer-output").textContent =
+        `=== 原文 ===\n${original.slice(0, 500)}${original.length > 500 ? '...' : ''}\n\n=== 处理后 ===\n${processed.slice(0, 500)}${processed.length > 500 ? '...' : ''}`;
+}
+
+// ==================== 初始化 ====================
 jQuery(() => {
     loadSettings();
     const s = getSettings();
@@ -383,6 +571,8 @@ jQuery(() => {
             <div class="inline-drawer-icon fa-solid fa-circle-chevron-down"></div>
         </div>
         <div class="inline-drawer-content">
+            </!-->
+            <h4 style="margin:5px 0;">API 配置</h4>
             <div style="display:flex;gap:10px;margin-bottom:8px;">
                 <div style="flex:1;"><label>API地址:</label><input type="text" id="summarizer-api-endpoint" class="text_pole" placeholder="https://xxx/v1"></input></div>
                 <div style="flex:1;"><label>API密钥:</label><input type="password" id="summarizer-api-key" class="text_pole"></input></div>
@@ -394,7 +584,37 @@ jQuery(() => {
                 <button id="summarizer-test-btn" class="menu_button">测试</button>
             </div>
             <div id="summarizer-status" style="font-size:12px;color:gray;margin-bottom:8px;">未连接</div>
-            <hr></hr>
+
+            <hr style="border-color:#444;margin:10px 0;"></hr>
+
+            </!-->
+            <h4 style="margin:5px 0;">标签提取规则</h4>
+            <div style="display:flex;gap:8px;margin-bottom:8px;">
+                <select id="summarizer-rule-type" class="text_pole" style="width:120px;">
+                    <option value="include">包含</option>
+                    <option value="exclude">排除</option>
+                    <option value="regex-include">正则包含</option>
+                    <option value="regex-exclude">正则排除</option>
+                </select>
+                <input type="text" id="summarizer-rule-value" class="text_pole" placeholder="标签名或正则表达式" style="flex:1;"></input>
+                <button id="summarizer-add-rule" class="menu_button">添加</button>
+            </div>
+            <div style="display:flex;gap:5px;margin-bottom:8px;flex-wrap:wrap;">
+                <button id="summarizer-preset-cot" class="menu_button" style="font-size:11px;">去除小CoT</button>
+                <button id="summarizer-preset-thinking" class="menu_button" style="font-size:11px;">排除thinking</button>
+                <button id="summarizer-preset-content" class="menu_button" style="font-size:11px;">只含content</button>
+                <button id="summarizer-clear-rules" class="menu_button" style="font-size:11px;">清空规则</button>
+                <button id="summarizer-test-extract" class="menu_button" style="font-size:11px;">测试规则</button>
+            </div>
+            <div id="summarizer-rules-list" style="max-height:120px;overflow-y:auto;margin-bottom:8px;"></div>
+
+            <label>黑名单（每行一个词）:</label>
+            <textarea id="summarizer-blacklist" class="text_pole" rows="2" placeholder="要过滤的词..."></textarea>
+
+            <hr style="border-color:#444;margin:10px 0;"></hr>
+
+            </!-->
+            <h4 style="margin:5px 0;">总结设置</h4>
             <div style="display:flex;gap:10px;margin:8px 0;">
                 <div style="flex:2;"><label>提示词:</label><textarea id="summarizer-prompt" class="text_pole" rows="2"></textarea></div>
                 <div style="flex:1;"><label>总结条数:</label><input type="number" id="summarizer-max-msgs" class="text_pole" min="5" max="200"></input></div>
@@ -408,6 +628,7 @@ jQuery(() => {
                 <label class="checkbox_label"><input type="checkbox" id="summarizer-auto-hide"> 自动隐藏</input></label>
             </div>
             <div id="summarizer-hide-status" style="font-size:12px;color:#888;margin:5px 0;">显示: - | 隐藏: - | 总计: -</div>
+
             <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;">
                 <button id="summarizer-btn" class="menu_button">总结</button>
                 <button id="summarizer-history-btn" class="menu_button">历史</button>
@@ -431,9 +652,21 @@ jQuery(() => {
     $("#summarizer-keep-visible").val(s.keepVisible).on("change", function() { s.keepVisible = +this.value || 10; saveSettings(); });
     $("#summarizer-auto-enabled").prop("checked", s.autoSummarize).on("change", function() { s.autoSummarize = this.checked; saveSettings(); });
     $("#summarizer-auto-hide").prop("checked", s.autoHide).on("change", function() { s.autoHide = this.checked; saveSettings(); });
+    $("#summarizer-blacklist").val(s.blacklist).on("change", function() { s.blacklist = this.value; saveSettings(); });
 
+    // API按钮
     $("#summarizer-fetch-models").on("click", refreshModelList);
     $("#summarizer-test-btn").on("click", testConnection);
+
+    // 规则按钮
+    $("#summarizer-add-rule").on("click", addRule);
+    $("#summarizer-clear-rules").on("click", clearAllRules);
+    $("#summarizer-test-extract").on("click", testExtraction);
+    $("#summarizer-preset-cot").on("click", () => addPresetRule('regex-exclude', ''));
+    $("#summarizer-preset-thinking").on("click", () => addPresetRule('exclude', 'thinking'));
+    $("#summarizer-preset-content").on("click", () => addPresetRule('include', 'content'));
+
+    // 总结按钮
     $("#summarizer-btn").on("click", doSummarize);
     $("#summarizer-history-btn").on("click", showHistory);
     $("#summarizer-clear-btn").on("click", clearHistory);
@@ -443,8 +676,11 @@ jQuery(() => {
     eventSource.on(event_types.MESSAGE_RECEIVED, () => setTimeout(checkAuto, 1000));
     eventSource.on(event_types.MESSAGE_SENT, () => setTimeout(checkAuto, 1000));
 
-    // 初始化状态
-    setTimeout(updateHideStatus, 500);
+    // 初始化
+    setTimeout(() => {
+        updateHideStatus();
+        renderRulesList();
+    }, 500);
 
     console.log("痔疮总结机 loaded");
 });
