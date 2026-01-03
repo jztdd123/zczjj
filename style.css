@@ -1,0 +1,18 @@
+#summarizer-panel {
+    padding: 10px;
+}
+
+#summarizer-output {
+    margin-top: 10px;
+    padding: 10px;
+    background: var(--SmartThemeBlurTintColor);
+    border-radius: 5px;
+    max-height: 300px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+}
+
+#summarizer-btn {
+    width: 100%;
+    margin-top: 5px;
+}
