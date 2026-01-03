@@ -1,5 +1,5 @@
 import { getContext, extension_settings } from "../../../extensions.js";
-import { eventSource, event_types, saveSettingsDebounced } from "../../../../script.js";
+import { eventSource, event_types, saveSettingsDebounced, getRequestHeaders } from "../../../../script.js";
 
 const extensionName = "st-summarizer";
 const localStorageKey = "summarizer_credentials";
@@ -52,32 +52,22 @@ function saveSettings() {
     saveSettingsDebounced();
 }
 
-// 通过ST后端代理请求，避免CORS
-async function proxyFetch(url, options) {
-    // 尝试使用ST的代理端点
-    const proxyUrl = "/api/extensions/fetch";
+// 通过ST代理发送请求
+async function stProxyFetch(targetUrl, method, headers, body) {
+    const stHeaders = getRequestHeaders();
 
-    try {
-        const response = await fetch(proxyUrl, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-                url: url,
-                method: options.method || "GET",
-                headers: options.headers || {},
-                body: options.body || null
-            })
-        });
-        return response;
-    } catch {
-        // fallback: 直接请求（可能遇到CORS）
-        return fetch(url, options);
-    }
-}
+    const response = await fetch("/api/extensions/fetch", {
+        method: "POST",
+        headers: stHeaders,
+        body: JSON.stringify({
+            url: targetUrl,
+            method: method,
+            headers: headers,
+            body: body
+        })
+    });
 
-// 直接fetch，增加错误处理
-async function directFetch(url, options) {
-    return fetch(url, options);
+    return response;
 }
 
 async function fetchModels() {
@@ -92,14 +82,15 @@ async function fetchModels() {
     } else if (modelsUrl.endsWith("/v1")) {
         modelsUrl = modelsUrl + "/models";
     } else if (!modelsUrl.includes("/models")) {
-        const base = modelsUrl.replace(/\/+$/, "");
-        modelsUrl = base + "/models";
+        modelsUrl = modelsUrl.replace(/\/+$/, "") + "/models";
     }
 
-    const response = await fetch(modelsUrl, {
-        method: "GET",
-        headers: { "Authorization": `Bearer ${settings.apiKey}` }
-    });
+    const response = await stProxyFetch(
+        modelsUrl,
+        "GET",
+        { "Authorization": `Bearer ${settings.apiKey}` },
+        null
+    );
 
     if (!response.ok) throw new Error(`获取模型失败: ${response.status}`);
     const data = await response.json();
@@ -117,53 +108,32 @@ async function testConnection() {
             throw new Error("请填写完整配置");
         }
 
-        // 使用ST的代理接口
-        const response = await fetch("/api/backends/chat-completions/generate", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-                url: settings.apiEndpoint,
-                key: settings.apiKey,
+        const response = await stProxyFetch(
+            settings.apiEndpoint,
+            "POST",
+            {
+                "Content-Type": "application/json",
+                "Authorization": `Bearer ${settings.apiKey}`
+            },
+            JSON.stringify({
                 model: settings.model,
-                messages: [{ role: "user", content: "test" }],
+                messages: [{ role: "user", content: "Hi" }],
                 max_tokens: 5
             })
-        });
+        );
 
-        // 如果ST代理不可用，直接请求
-        if (response.status === 404) {
-            const directResponse = await fetch(settings.apiEndpoint, {
-                method: "POST",
-                headers: {
-                    "Content-Type": "application/json",
-                    "Authorization": `Bearer ${settings.apiKey}`
-                },
-                body: JSON.stringify({
-                    model: settings.model,
-                    messages: [{ role: "user", content: "Hi" }],
-                    max_tokens: 5
-                })
-            });
-
-            if (!directResponse.ok) {
-                const errText = await directResponse.text();
-                throw new Error(`${directResponse.status}: ${errText.slice(0, 80)}`);
-            }
-            const data = await directResponse.json();
-            if (data.choices) {
-                statusDiv.textContent = "✓ 连接成功";
-                statusDiv.style.color = "lime";
-                return;
-            }
+        if (!response.ok) {
+            const errText = await response.text();
+            throw new Error(`${response.status}: ${errText.slice(0, 80)}`);
         }
 
-        if (response.ok) {
+        const data = await response.json();
+        if (data.choices) {
             statusDiv.textContent = "✓ 连接成功";
             statusDiv.style.color = "lime";
         } else {
-            throw new Error(`${response.status}`);
+            throw new Error("响应格式异常");
         }
-
     } catch (error) {
         statusDiv.textContent = "✗ " + error.message;
         statusDiv.style.color = "red";
@@ -216,19 +186,20 @@ async function callCustomAPI(prompt) {
     const settings = getSettings();
     if (!settings.apiEndpoint || !settings.apiKey) throw new Error("请先配置API");
 
-    const response = await fetch(settings.apiEndpoint, {
-        method: "POST",
-        headers: {
+    const response = await stProxyFetch(
+        settings.apiEndpoint,
+        "POST",
+        {
             "Content-Type": "application/json",
             "Authorization": `Bearer ${settings.apiKey}`
         },
-        body: JSON.stringify({
+        JSON.stringify({
             model: settings.model,
             messages: [{ role: "user", content: prompt }],
             temperature: 0.7,
             max_tokens: 2000
         })
-    });
+    );
 
     if (!response.ok) {
         const errText = await response.text();
@@ -343,9 +314,7 @@ jQuery(async () => {
             <div style="display:grid; grid-template-columns:1fr 1fr auto auto; gap:10px; margin-top:8px; align-items:end;">
                 <div>
                     <label>选择模型:</label>
-                    <select id="summarizer-model-select" class="text_pole">
-                        <option value="">--</option>
-                    </select>
+                    <select id="summarizer-model-select" class="text_pole"><option value="">--</option></select>
                 </div>
                 <div>
                     <label>手动输入:</label>
@@ -365,7 +334,7 @@ jQuery(async () => {
                     <textarea id="summarizer-prompt" class="text_pole" rows="2" style="resize:vertical;"></textarea>
                 </div>
                 <div>
-                    <label>手动总结条数:</label>
+                    <label>手动条数:</label>
                     <input type="number" id="summarizer-max-msgs" class="text_pole" min="5" max="200"></input>
                 </div>
                 <div>
