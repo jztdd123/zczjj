@@ -1,7 +1,9 @@
-import { getContext, extension_settings } from "../../../extensions.js";
+import { getContext, extension_settings, renderExtensionTemplateAsync } from "../../../extensions.js";
 import { generateQuietPrompt } from "../../../../script.js";
 
 const extensionName = "st-summarizer";
+const extensionFolderPath = `scripts/extensions/third-party/${extensionName}`;
+
 const defaultSettings = {
     summaryPrompt: "请用简洁的中文总结以上对话的主要内容，保留关键信息和角色行为。",
     maxMessages: 20
@@ -48,7 +50,6 @@ async function doSummarize() {
             btn.disabled = false;
             return;
         }
-
         const prompt = `${chatContent}\n\n---\n${settings.summaryPrompt}`;
         const summary = await generateQuietPrompt(prompt, false, false);
         outputDiv.textContent = summary || "总结生成失败。";
@@ -59,9 +60,10 @@ async function doSummarize() {
     btn.disabled = false;
 }
 
-function createUI() {
+jQuery(async () => {
+    loadSettings();
+
     const settingsHtml = `
-<div id="summarizer-panel" class="extension_settings">
     <div class="inline-drawer">
         <div class="inline-drawer-toggle inline-drawer-header">
             <b>痔疮总结机</b>
@@ -75,26 +77,21 @@ function createUI() {
             <button id="summarizer-btn" class="menu_button">生成总结</button>
             <div id="summarizer-output">点击上方按钮生成对话总结</div>
         </div>
-    </div>
-</div>`;
+    </div>`;
 
-    document.getElementById("extensions_settings").insertAdjacentHTML("beforeend", settingsHtml);
+    $("#extensions_settings2").append(settingsHtml);
 
     const settings = extension_settings[extensionName];
-    document.getElementById("summarizer-max-msgs").value = settings.maxMessages;
-    document.getElementById("summarizer-prompt").value = settings.summaryPrompt;
+    $("#summarizer-max-msgs").val(settings.maxMessages);
+    $("#summarizer-prompt").val(settings.summaryPrompt);
 
-    document.getElementById("summarizer-max-msgs").addEventListener("change", function() {
-        settings.maxMessages = parseInt(this.value) || 20;
+    $("#summarizer-max-msgs").on("change", function() {
+        settings.maxMessages = parseInt($(this).val()) || 20;
     });
-    document.getElementById("summarizer-prompt").addEventListener("change", function() {
-        settings.summaryPrompt = this.value;
+    $("#summarizer-prompt").on("change", function() {
+        settings.summaryPrompt = $(this).val();
     });
-    document.getElementById("summarizer-btn").addEventListener("click", doSummarize);
-}
+    $("#summarizer-btn").on("click", doSummarize);
 
-jQuery(async () => {
-    loadSettings();
-    createUI();
     console.log("痔疮总结机 loaded.");
 });
