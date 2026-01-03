@@ -1,6 +1,5 @@
 import { getContext, extension_settings } from "../../../extensions.js";
 import { eventSource, event_types, saveSettingsDebounced } from "../../../../script.js";
-import { loadWorldInfo, saveWorldInfo } from "../../../world-info.js";
 
 const extensionName = "st-summarizer";
 const localStorageKey = "summarizer_credentials";
@@ -12,14 +11,14 @@ const defaultSettings = {
     triggerInterval: 20,
     keepVisible: 10,
     autoHide: true,
-    autoWorldBook: true,
+    autoWorldInfo: true,
     apiEndpoint: "",
     apiKey: "",
     model: "",
     lastSummarizedIndex: 0,
     savedSummaries: [],
-    worldBookName: null,
-    worldBookEntryUid: null
+    currentWorldBook: "",
+    currentEntryUid: null
 };
 
 function saveCredentialsLocal(endpoint, key) {
@@ -66,174 +65,179 @@ function getModelsUrl(base) {
     return base + "/v1/models";
 }
 
-// 生成时间戳
+// 获取当前时间戳格式
 function getTimestamp() {
     const now = new Date();
-    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}@${String(now.getHours()).padStart(2, '0')}h${String(now.getMinutes()).padStart(2, '0')}m${String(now.getSeconds()).padStart(2, '0')}s`;
+    const year = now.getFullYear();
+    const month = String(now.getMonth() + 1).padStart(2, '0');
+    const day = String(now.getDate()).padStart(2, '0');
+    const hour = String(now.getHours()).padStart(2, '0');
+    const min = String(now.getMinutes()).padStart(2, '0');
+    const sec = String(now.getSeconds()).padStart(2, '0');
+    return `${year}-${month}-${day}@${hour}h${min}m${sec}s`;
 }
 
-// 生成世界书名称
-function generateWorldBookName() {
+// 获取当前角色名
+function getCharacterName() {
     const context = getContext();
-    const charName = context.name2 || "Summary";
-    return `${charName}_Summaries`;
+    return context.name2 || context.characterId || "Unknown";
 }
 
-// 生成条目名称
-function generateEntryName() {
+// 获取当前聊天ID
+function getChatId() {
     const context = getContext();
-    const charName = context.name2 || "Unknown";
-    return `${charName} - ${getTimestamp()}`;
+    return context.chatId || null;
+}
+
+// 加载世界书
+async function loadWorldInfo(worldName) {
+    try {
+        const response = await fetch('/api/worldinfo/get', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: worldName })
+        });
+        if (!response.ok) return null;
+        return await response.json();
+    } catch (e) {
+        console.error("加载世界书失败:", e);
+        return null;
+    }
+}
+
+// 保存世界书
+async function saveWorldInfo(worldName, data) {
+    try {
+        const response = await fetch('/api/worldinfo/edit', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: worldName, data: data })
+        });
+        return response.ok;
+    } catch (e) {
+        console.error("保存世界书失败:", e);
+        return false;
+    }
 }
 
 // 创建世界书
-async function createWorldBook(bookName) {
+async function createWorldInfo(worldName) {
     try {
         const response = await fetch('/api/worldinfo/create', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name: bookName })
+            body: JSON.stringify({ name: worldName })
         });
-
-        if (response.ok) {
-            console.log('[痔疮总结机] 世界书创建成功:', bookName);
-            return true;
-        } else {
-            // 可能已存在
-            console.log('[痔疮总结机] 世界书可能已存在:', bookName);
-            return true;
-        }
+        return response.ok;
     } catch (e) {
-        console.error('[痔疮总结机] 创建世界书失败:', e);
+        console.error("创建世界书失败:", e);
         return false;
     }
 }
 
-// 绑定世界书到聊天
-async function bindWorldBookToChat(bookName) {
-    const context = getContext();
-
+// 获取世界书列表
+async function getWorldInfoList() {
     try {
-        // 设置聊天的世界书
-        if (context.chatMetadata) {
-            if (!context.chatMetadata.world_info) {
-                context.chatMetadata.world_info = bookName;
+        const response = await fetch('/api/worldinfo/list', { method: 'GET' });
+        if (!response.ok) return [];
+        const data = await response.json();
+        return data.entries || data || [];
+    } catch (e) {
+        console.error("获取世界书列表失败:", e);
+        return [];
+    }
+}
+
+// 绑定世界书到当前聊天
+async function bindWorldInfoToChat(worldName) {
+    try {
+        const context = getContext();
+
+        // 获取当前聊天的世界书列表
+        if (!context.chatMetadata) {
+            context.chatMetadata = {};
+        }
+        if (!context.chatMetadata.world_info) {
+            context.chatMetadata.world_info = [];
+        }
+
+        // 检查是否已绑定
+        if (!context.chatMetadata.world_info.includes(worldName)) {
+            context.chatMetadata.world_info.push(worldName);
+
+            // 保存聊天元数据
+            if (typeof context.saveChat === 'function') {
+                await context.saveChat();
             }
+
+            console.log(`世界书 ${worldName} 已绑定到当前聊天`);
+            return true;
         }
-
-        // 通过API绑定
-        const response = await fetch('/api/worldinfo/bind-chat', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                name: bookName,
-                chatId: context.chatId
-            })
-        });
-
-        if (response.ok) {
-            console.log('[痔疮总结机] 已绑定世界书到聊天:', bookName);
-        }
-
-        // 备用：直接更新chat metadata
-        if (typeof context.saveChat === 'function') {
-            await context.saveChat();
-        }
-
         return true;
     } catch (e) {
-        console.error('[痔疮总结机] 绑定世界书失败:', e);
+        console.error("绑定世界书失败:", e);
         return false;
     }
 }
 
-// 获取下一个可用的UID
-function getNextUid(worldData) {
-    if (!worldData.entries || Object.keys(worldData.entries).length === 0) {
-        return 0;
-    }
-    const uids = Object.keys(worldData.entries).map(Number);
-    return Math.max(...uids) + 1;
-}
-
-// 添加总结到世界书
-async function addSummaryToWorldBook(summary, range) {
+// 写入总结到世界书
+async function writeSummaryToWorldInfo(summary, range) {
     const settings = getSettings();
+    if (!settings.autoWorldInfo) return;
+
+    const charName = getCharacterName();
+    const worldBookName = `${charName}_Summaries`;
 
     try {
-        // 确定世界书名称
-        let bookName = settings.worldBookName;
-        if (!bookName) {
-            bookName = generateWorldBookName();
-            settings.worldBookName = bookName;
-            saveSettings();
+        // 检查世界书是否存在
+        const worldList = await getWorldInfoList();
+        const exists = worldList.some(w => (typeof w === 'string' ? w : w.name) === worldBookName);
+
+        if (!exists) {
+            // 创建新世界书
+            await createWorldInfo(worldBookName);
+            console.log(`创建世界书: ${worldBookName}`);
         }
 
-        // 创建世界书（如果不存在）
-        await createWorldBook(bookName);
-
-        // 加载世界书数据
-        let worldData = await loadWorldInfo(bookName);
-
+        // 加载世界书
+        let worldData = await loadWorldInfo(worldBookName);
         if (!worldData) {
-            // 初始化空世界书结构
             worldData = { entries: {} };
         }
-
         if (!worldData.entries) {
             worldData.entries = {};
         }
 
-        const timestamp = getTimestamp();
-        const newSummaryBlock = `【${timestamp} | 消息 ${range}】\n${summary}`;
+        // 查找或创建条目
+        let entryUid = settings.currentEntryUid;
+        let entryName = settings.currentEntryName;
 
-        // 查找现有的总结条目
-        let existingEntry = null;
-        let existingUid = null;
-
-        if (settings.worldBookEntryUid !== null) {
-            existingEntry = worldData.entries[settings.worldBookEntryUid];
-            existingUid = settings.worldBookEntryUid;
-        }
-
-        // 如果没找到，尝试按comment查找
-        if (!existingEntry) {
-            const context = getContext();
-            const charName = context.name2 || "";
-
-            for (const [uid, entry] of Object.entries(worldData.entries)) {
-                if (entry.comment && entry.comment.includes(charName) && entry.constant === true) {
-                    existingEntry = entry;
-                    existingUid = uid;
-                    settings.worldBookEntryUid = uid;
-                    break;
-                }
-            }
-        }
-
-        if (existingEntry) {
-            // 追加到现有条目
-            existingEntry.content = existingEntry.content + '\n\n' + newSummaryBlock;
-            console.log('[痔疮总结机] 追加总结到现有条目, UID:', existingUid);
-        } else {
+        // 如果没有当前条目，或者是新聊天，创建新条目
+        const chatId = getChatId();
+        if (!entryUid || !worldData.entries[entryUid] || settings.currentChatId !== chatId) {
             // 创建新条目
-            const newUid = getNextUid(worldData);
-            const entryName = generateEntryName();
+            const timestamp = getTimestamp();
+            entryName = `${charName} - ${timestamp}`;
 
-            worldData.entries[newUid] = {
-                uid: newUid,
-                key: ["总结", "summary", "记忆"],
+            // 找一个新的UID
+            const existingUids = Object.keys(worldData.entries).map(Number).filter(n => !isNaN(n));
+            entryUid = existingUids.length > 0 ? Math.max(...existingUids) + 1 : 0;
+
+            // 创建蓝灯条目 (constant = true, depth = 2)
+            worldData.entries[entryUid] = {
+                uid: entryUid,
+                key: [],
                 keysecondary: [],
                 comment: entryName,
-                content: `【对话总结记录】\n\n${newSummaryBlock}`,
-                constant: true,          // 蓝灯
-                selective: false,
+                content: "",
+                constant: true,        // 蓝灯 = 常驻
                 vectorized: false,
+                selective: false,
                 selectiveLogic: 0,
                 addMemo: true,
                 order: 100,
-                position: 0,
-                depth: 2,                // D2
+                position: 4,           // 深度位置
+                depth: 2,              // D2
                 disable: false,
                 excludeRecursion: false,
                 preventRecursion: false,
@@ -243,9 +247,8 @@ async function addSummaryToWorldBook(summary, range) {
                 groupOverride: false,
                 groupWeight: 100,
                 scanDepth: null,
-                caseSensitive: false,
-                matchWholeWords: false,
-                useGroupScoring: false,
+                caseSensitive: null,
+                matchWholeWords: null,
                 automationId: "",
                 role: null,
                 sticky: null,
@@ -253,24 +256,36 @@ async function addSummaryToWorldBook(summary, range) {
                 delay: null
             };
 
-            settings.worldBookEntryUid = newUid;
-            saveSettings();
-
-            console.log('[痔疮总结机] 创建新条目:', entryName, 'UID:', newUid);
+            settings.currentEntryUid = entryUid;
+            settings.currentEntryName = entryName;
+            settings.currentChatId = chatId;
+            console.log(`创建新条目: ${entryName} (UID: ${entryUid})`);
         }
 
-        // 保存世界书（立即保存）
-        await saveWorldInfo(bookName, worldData, true);
-        console.log('[痔疮总结机] 世界书已保存');
+        // 追加总结内容
+        const entry = worldData.entries[entryUid];
+        const newContent = `\n\n【${getTimestamp()}】消息 ${range}:\n${summary}`;
 
-        // 绑定到聊天
-        await bindWorldBookToChat(bookName);
+        if (entry.content) {
+            entry.content += newContent;
+        } else {
+            entry.content = `# ${entryName} 对话总结${newContent}`;
+        }
 
-        return true;
+        // 保存世界书
+        await saveWorldInfo(worldBookName, worldData);
+        console.log(`总结已写入世界书条目: ${entryName}`);
+
+        // 绑定到当前聊天
+        await bindWorldInfoToChat(worldBookName);
+
+        saveSettings();
+
+        return { worldBookName, entryName };
 
     } catch (e) {
-        console.error('[痔疮总结机] 添加总结到世界书失败:', e);
-        return false;
+        console.error("写入世界书失败:", e);
+        return null;
     }
 }
 
@@ -359,7 +374,6 @@ function hideMessages(startIdx, endIdx) {
     if (hiddenCount > 0 && typeof context.saveChat === 'function') {
         context.saveChat();
     }
-
     return hiddenCount;
 }
 
@@ -372,7 +386,6 @@ function checkContinuousHide() {
     if (!chat || chat.length === 0) return;
 
     const hideUntil = chat.length - settings.keepVisible;
-
     if (hideUntil > 0) {
         let hiddenCount = 0;
         for (let i = 0; i < hideUntil; i++) {
@@ -381,7 +394,6 @@ function checkContinuousHide() {
                 hiddenCount++;
             }
         }
-
         if (hiddenCount > 0 && typeof context.saveChat === 'function') {
             context.saveChat();
             updateHideStatus();
@@ -399,9 +411,7 @@ function updateHideStatus() {
     const total = chat.filter(m => !m.is_system).length;
 
     const statusEl = document.getElementById("summarizer-hide-status");
-    if (statusEl) {
-        statusEl.textContent = `显示: ${visible} | 隐藏: ${hidden} | 总计: ${total}`;
-    }
+    if (statusEl) statusEl.textContent = `显示: ${visible} | 隐藏: ${hidden} | 总: ${total}`;
 }
 
 function unhideAll() {
@@ -416,13 +426,11 @@ function unhideAll() {
             count++;
         }
     }
-
     if (count > 0 && typeof context.saveChat === 'function') {
         context.saveChat();
     }
-
     updateHideStatus();
-    document.getElementById("summarizer-output").textContent = `已取消隐藏 ${count} 条消息`;
+    document.getElementById("summarizer-output").textContent = `已取消隐藏 ${count} 条`;
 }
 
 function getRecentChat(start, end) {
@@ -474,6 +482,7 @@ async function doSummarize() {
         if (!chat) { out.textContent = "无记录"; btn.disabled = false; return; }
 
         const summary = await callAPI(`${chat}\n---\n${settings.summaryPrompt}`);
+
         const range = `${start + 1}-${len}`;
 
         settings.savedSummaries.push({
@@ -482,36 +491,36 @@ async function doSummarize() {
             content: summary
         });
 
-        let resultText = summary;
-
-        // 保存到世界书
-        if (settings.autoWorldBook) {
-            out.textContent = "写入世界书...";
-            const wbResult = await addSummaryToWorldBook(summary, range);
-            if (wbResult) {
-                resultText = `[✓ 已写入世界书: ${settings.worldBookName}]\n\n${summary}`;
-            } else {
-                resultText = `[✗ 世界书写入失败]\n\n${summary}`;
-            }
+        // 写入世界书
+        let worldResult = null;
+        if (settings.autoWorldInfo) {
+            worldResult = await writeSummaryToWorldInfo(summary, range);
         }
 
-        // 自动隐藏
+        // 隐藏
         if (settings.autoHide) {
             const hideUntil = len - settings.keepVisible;
             if (hideUntil > 0) {
-                const hiddenCount = hideMessages(0, hideUntil);
-                resultText = `[已隐藏 ${hiddenCount} 条消息]\n` + resultText;
+                hideMessages(0, hideUntil);
             }
         }
 
-        out.textContent = resultText;
         settings.lastSummarizedIndex = len;
         saveSettings();
         updateHideStatus();
 
+        let resultText = summary;
+        if (worldResult) {
+            resultText = `[已写入世界书: ${worldResult.worldBookName}]\n[条目: ${worldResult.entryName}]\n\n${summary}`;
+        }
+        if (settings.autoHide) {
+            resultText = `[已隐藏 1-${len - settings.keepVisible} 楼]\n` + resultText;
+        }
+        out.textContent = resultText;
+
     } catch (e) {
         out.textContent = "错误: " + e.message;
-        console.error('[痔疮总结机]', e);
+        console.error(e);
     }
     btn.disabled = false;
 }
@@ -519,9 +528,7 @@ async function doSummarize() {
 async function checkAuto() {
     const settings = getSettings();
 
-    if (settings.autoHide) {
-        checkContinuousHide();
-    }
+    if (settings.autoHide) checkContinuousHide();
 
     if (!settings.autoSummarize) return;
 
@@ -546,15 +553,15 @@ async function checkAuto() {
                 auto: true
             });
 
-            if (settings.autoWorldBook) {
-                await addSummaryToWorldBook(summary, range);
+            // 写入世界书
+            if (settings.autoWorldInfo) {
+                await writeSummaryToWorldInfo(summary, range);
             }
 
+            // 隐藏
             if (settings.autoHide) {
                 const hideUntil = len - settings.keepVisible;
-                if (hideUntil > 0) {
-                    hideMessages(0, hideUntil);
-                }
+                if (hideUntil > 0) hideMessages(0, hideUntil);
             }
 
             settings.lastSummarizedIndex = len;
@@ -564,7 +571,7 @@ async function checkAuto() {
             out.textContent = `[自动总结完成]\n${summary}`;
 
         } catch (e) {
-            console.error("[痔疮总结机] 自动总结失败", e);
+            console.error("自动总结失败", e);
             out.textContent = "自动总结失败: " + e.message;
         }
     }
@@ -583,9 +590,11 @@ function clearHistory() {
     const s = getSettings();
     s.savedSummaries = [];
     s.lastSummarizedIndex = 0;
-    s.worldBookEntryUid = null;
+    s.currentEntryUid = null;
+    s.currentEntryName = "";
+    s.currentChatId = null;
     saveSettings();
-    document.getElementById("summarizer-output").textContent = "已清空历史（世界书条目需手动删除）";
+    document.getElementById("summarizer-output").textContent = "已清空";
 }
 
 jQuery(() => {
@@ -622,9 +631,9 @@ jQuery(() => {
             <div style="display:flex;gap:15px;align-items:center;margin:8px 0;flex-wrap:wrap;">
                 <label class="checkbox_label"><input type="checkbox" id="summarizer-auto-enabled"> 自动总结</input></label>
                 <label class="checkbox_label"><input type="checkbox" id="summarizer-auto-hide"> 自动隐藏</input></label>
-                <label class="checkbox_label"><input type="checkbox" id="summarizer-auto-worldbook"> 写入世界书</input></label>
+                <label class="checkbox_label"><input type="checkbox" id="summarizer-auto-worldinfo"> 写入世界书</input></label>
             </div>
-            <div id="summarizer-hide-status" style="font-size:12px;color:#888;margin:5px 0;">显示: - | 隐藏: - | 总计: -</div>
+            <div id="summarizer-hide-status" style="font-size:12px;color:#888;margin:5px 0;">显示: - | 隐藏: - | 总: -</div>
             <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;">
                 <button id="summarizer-btn" class="menu_button">总结</button>
                 <button id="summarizer-history-btn" class="menu_button">历史</button>
@@ -647,7 +656,7 @@ jQuery(() => {
     $("#summarizer-keep-visible").val(s.keepVisible).on("change", function() { s.keepVisible = +this.value || 10; saveSettings(); });
     $("#summarizer-auto-enabled").prop("checked", s.autoSummarize).on("change", function() { s.autoSummarize = this.checked; saveSettings(); });
     $("#summarizer-auto-hide").prop("checked", s.autoHide).on("change", function() { s.autoHide = this.checked; saveSettings(); });
-    $("#summarizer-auto-worldbook").prop("checked", s.autoWorldBook).on("change", function() { s.autoWorldBook = this.checked; saveSettings(); });
+    $("#summarizer-auto-worldinfo").prop("checked", s.autoWorldInfo).on("change", function() { s.autoWorldInfo = this.checked; saveSettings(); });
 
     $("#summarizer-fetch-models").on("click", refreshModelList);
     $("#summarizer-test-btn").on("click", testConnection);
@@ -661,5 +670,5 @@ jQuery(() => {
 
     setTimeout(updateHideStatus, 500);
 
-    console.log("[痔疮总结机] loaded");
+    console.log("痔疮总结机 loaded");
 });
