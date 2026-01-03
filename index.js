@@ -110,29 +110,33 @@ async function testConnection() {
 
 async function refreshModelList() {
     const sel = document.getElementById("summarizer-model-select");
-    const status = document.getElementById("summarizer-status");</'`**>
-    sel.innerHTML = '<option>加载中...</option>';
+    const status = document.getElementById("summarizer-status");
+    sel.innerHTML = "<option>加载中...</'`></option>";
     status.textContent = "获取模型...";
     status.style.color = "orange";
 
     try {
         const models = await fetchModels();
-        sel.innerHTML = '<option value="">-- 选择 --</option>';
+        sel.innerHTML = "<option value=''>-- 选择 --</option>";
         models.forEach(m => {
             const id = m.id || m.name || m;
-            sel.innerHTML += `<option value="${id}">${id}</option>`;
+            const opt = document.createElement("option");
+            opt.value = id;
+            opt.textContent = id;
+            sel.appendChild(opt);
         });
         const settings = getSettings();
         if (settings.model) sel.value = settings.model;
         status.textContent = `✓ ${models.length} 模型`;
         status.style.color = "lime";
     } catch (e) {
-        sel.innerHTML = '<option>失败</option>';
+        sel.innerHTML = "<option>失败</option>";
         status.textContent = "✗ " + e.message;
         status.style.color = "red";
     }
 }
 
+// 内容提取引擎
 function applyExtractionRules(text) {
     const settings = getSettings();
     if (!settings.useExtraction || settings.extractRules.length === 0) {
@@ -142,34 +146,36 @@ function applyExtractionRules(text) {
     let processedText = text;
     const extractedParts = [];
 
-    const excludeRules = settings.extractRules.filter(r => r.type === 'exclude' || r.type === 'regex-exclude');
+    // 第一步：应用排除规则
+    const excludeRules = settings.extractRules.filter(r => r.type === "exclude" || r.type === "regex-exclude");
     for (const rule of excludeRules) {
-        if (rule.type === 'exclude') {
-            const tagRegex = new RegExp(`<${rule.value}[^>]*>[\\s\\S]*?</${rule.value}[^><\\/${rule.value}>`, 'gi');
-            processedText = processedText.replace(tagRegex, '');
-        } else if (rule.type === 'regex-exclude') {
+        if (rule.type === "exclude") {
+            const tagRegex = new RegExp("<" + rule.value + "[^>]*>[\\s\\S]*?</" + rule.value + ">", "gi");
+            processedText = processedText.replace(tagRegex, "");
+        } else if (rule.type === "regex-exclude") {
             try {
-                const regex = new RegExp(rule.value, 'gi');
-                processedText = processedText.replace(regex, '');
+                const regex = new RegExp(rule.value, "gi");
+                processedText = processedText.replace(regex, "");
             } catch (e) {
-                console.error('正则排除规则错误:', e);
+                console.error("正则排除规则错误:", e);
             }
         }
     }
 
-    const includeRules = settings.extractRules.filter(r => r.type === 'include' || r.type === 'regex-include');
+    // 第二步：应用包含规则
+    const includeRules = settings.extractRules.filter(r => r.type === "include" || r.type === "regex-include");
 
     if (includeRules.length > 0) {
         for (const rule of includeRules) {
-            if (rule.type === 'include') {</\\>
-                const tagRegex = new RegExp(`<${rule.value}[^>]*>([\\s\\S]*?)</${rule.value}[^><\\/${rule.value}>`, 'gi');
+            if (rule.type === "include") {
+                const tagRegex = new RegExp("<" + rule.value + "[^>]*>([\\s\\S]*?)</" + rule.value + ">", "gi");
                 let match;
                 while ((match = tagRegex.exec(processedText)) !== null) {
                     extractedParts.push(match[1].trim());
                 }
-            } else if (rule.type === 'regex-include') {
+            } else if (rule.type === "regex-include") {
                 try {
-                    const regex = new RegExp(rule.value, 'gi');
+                    const regex = new RegExp(rule.value, "gi");
                     let match;
                     while ((match = regex.exec(processedText)) !== null) {
                         if (match[1]) {
@@ -179,39 +185,40 @@ function applyExtractionRules(text) {
                         }
                     }
                 } catch (e) {
-                    console.error('正则包含规则错误:', e);
+                    console.error("正则包含规则错误:", e);
                 }
             }
         }
-        return extractedParts.join('\n\n');
+        return extractedParts.join("\n\n");
     }
 
     return processedText;
 }
 
+// 预设规则
 const presetRules = {
-    'game-loadall': {
-        name: 'game.loadAll格式',
+    "game-loadall": {
+        name: "game.loadAll格式",
         rules: [
-            { type: 'regex-include', value: '`\\)\\s*game\\.loadAll\\(`([\\s\\S]*?)`\\)' }
+            { type: "regex-include", value: "`\\)\\s*game\\.loadAll\\(`([\\s\\S]*?)`\\)" }
         ]
     },
-    'html-comment': {
-        name: 'HTML注释(小CoT)',
-        rules: [</\\>
-            { type: 'regex-exclude', value: '' }
+    "html-comment": {
+        name: "HTML注释(小CoT)",
+        rules: [
+            { type: "regex-exclude", value: "" }
         ]
     },
-    'details-summary': {
-        name: 'details摘要块',
+    "details-summary": {
+        name: "details摘要块",
         rules: [</!--[\\s\\S]*?-->
-            { type: 'regex-include', value: '<details><summary>摘要</summary>([\\s\\S]*?)</details>' }
+            { type: "regex-include", value: "<details><summary>摘要</summary>([\\s\\S]*?)</details>" }
         ]
     },
-    'content-tag': {
-        name: 'content标签',
+    "content-tag": {
+        name: "content标签",
         rules: [
-            { type: 'include', value: 'content' }
+            { type: "include", value: "content" }
         ]
     }
 };
@@ -255,40 +262,48 @@ function clearAllRules() {
     renderRulesList();
 }
 
+function escapeHtml(str) {
+    return str.replace(/&/g, "&").replace(/</g, "<").replace(/>/g, ">");
+}
+
 function renderRulesList() {
     const container = document.getElementById("summarizer-rules-list");
     const settings = getSettings();
 
     if (settings.extractRules.length === 0) {
-        container.innerHTML = '<div style="color:#666;font-size:12px;">无规则 (将提取全部内容)</div>';
+        container.innerHTML = "<div style='color:#666;font-size:12px;'>无规则 (将提取全部内容)</div>";
         return;
     }
 
     const typeLabels = {
-        'include': '包含',
-        'exclude': '排除',
-        'regex-include': '正则包含',
-        'regex-exclude': '正则排除'
+        "include": "包含",
+        "exclude": "排除",
+        "regex-include": "正则包含",
+        "regex-exclude": "正则排除"
     };
 
     const typeColors = {
-        'include': '#4a9',
-        'exclude': '#c66',
-        'regex-include': '#69c',
-        'regex-exclude': '#c69'
+        "include": "#4a9",
+        "exclude": "#c66",
+        "regex-include": "#69c",
+        "regex-exclude": "#c69"
     };
 
-    container.innerHTML = settings.extractRules.map((rule, i) => `
-        <div style="display:flex;align-items:center;gap:5px;margin:3px 0;padding:4px;background:rgba(255,255,255,0.05);border-radius:3px;">
-            <span style="background:${typeColors[rule.type]};color:#fff;padding:2px 6px;border-radius:3px;font-size:11px;">${typeLabels[rule.type]}</span>
-            <code style="flex:1;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(rule.value)}</code>
-            <button class="menu_button" style="padding:2px 8px;font-size:11px;" onclick="window.summarizerRemoveRule(${i})">×</button>
-        </div>
-    `).join('');
-}
+    let html = "";
+    settings.extractRules.forEach((rule, i) => {
+        html += "<div style='display:flex;align-items:center;gap:5px;margin:3px 0;padding:4px;background:rgba(255,255,255,0.05);border-radius:3px;'>";
+        html += "<span style='background:" + typeColors[rule.type] + ";color:#fff;padding:2px 6px;border-radius:3px;font-size:11px;'>" + typeLabels[rule.type] + "</span>";
+        html += "<code style='flex:1;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;'>" + escapeHtml(rule.value) + "</code>";
+        html += "<button class='menu_button summarizer-remove-rule' data-index='" + i + "' style='padding:2px 8px;font-size:11px;'>×</button>";
+        html += "</div>";
+    });
+    container.innerHTML = html;
 
-function escapeHtml(str) {
-    return str.replace(/&/g, '&').replace(/</g, '<').replace(/>/g, '>');
+    container.querySelectorAll(".summarizer-remove-rule").forEach(btn => {
+        btn.addEventListener("click", function() {
+            removeRule(parseInt(this.dataset.index));
+        });
+    });
 }
 
 function testExtraction() {
@@ -306,10 +321,11 @@ function testExtraction() {
     const extracted = applyExtractionRules(original);
 
     document.getElementById("summarizer-output").textContent =
-        `=== 原文 (${original.length}字) ===\n${original.slice(0, 500)}${original.length > 500 ? '...' : ''}\n\n` +
-        `=== 提取后 (${extracted.length}字) ===\n${extracted.slice(0, 500)}${extracted.length > 500 ? '...' : ''}`;
+        "=== 原文 (" + original.length + "字) ===\n" + original.slice(0, 500) + (original.length > 500 ? "..." : "") + "\n\n" +
+        "=== 提取后 (" + extracted.length + "字) ===\n" + extracted.slice(0, 500) + (extracted.length > 500 ? "..." : "");
 }
 
+// 消息隐藏
 function hideMessages(startIdx, endIdx) {
     const context = getContext();
     const chat = context.chat;
@@ -323,7 +339,7 @@ function hideMessages(startIdx, endIdx) {
         }
     }
 
-    if (hiddenCount > 0 && typeof context.saveChat === 'function') {
+    if (hiddenCount > 0 && typeof context.saveChat === "function") {
         context.saveChat();
     }
     return hiddenCount;
@@ -348,7 +364,7 @@ function checkContinuousHide() {
             }
         }
 
-        if (hiddenCount > 0 && typeof context.saveChat === 'function') {
+        if (hiddenCount > 0 && typeof context.saveChat === "function") {
             context.saveChat();
             updateHideStatus();
         }
@@ -366,7 +382,7 @@ function updateHideStatus() {
 
     const statusEl = document.getElementById("summarizer-hide-status");
     if (statusEl) {
-        statusEl.textContent = `显示: ${visible} | 隐藏: ${hidden} | 总计: ${total}`;
+        statusEl.textContent = "显示: " + visible + " | 隐藏: " + hidden + " | 总计: " + total;
     }
 }
 
@@ -383,12 +399,12 @@ function unhideAll() {
         }
     }
 
-    if (count > 0 && typeof context.saveChat === 'function') {
+    if (count > 0 && typeof context.saveChat === "function") {
         context.saveChat();
     }
 
     updateHideStatus();
-    document.getElementById("summarizer-output").textContent = `已取消隐藏 ${count} 条消息`;
+    document.getElementById("summarizer-output").textContent = "已取消隐藏 " + count + " 条消息";
 }
 
 function getRecentChat(start, end) {
@@ -408,7 +424,7 @@ function getRecentChat(start, end) {
         }
 
         if (content.trim()) {
-            text += `${m.is_user ? "用户" : m.name}: ${content}\n\n`;
+            text += (m.is_user ? "用户" : m.name) + ": " + content + "\n\n";
         }
     });
 
@@ -423,7 +439,7 @@ async function callAPI(prompt) {
         method: "POST",
         headers: {
             "Content-Type": "application/json",
-            "Authorization": `Bearer ${settings.apiKey}`
+            "Authorization": "Bearer " + settings.apiKey
         },
         body: JSON.stringify({
             model: settings.model,
@@ -433,7 +449,7 @@ async function callAPI(prompt) {
         })
     });
 
-    if (!res.ok) throw new Error(`API ${res.status}`);
+    if (!res.ok) throw new Error("API " + res.status);
     const data = await res.json();
     return data.choices?.[0]?.message?.content || "失败";
 }
@@ -457,12 +473,12 @@ async function doSummarize() {
             return;
         }
 
-        const summary = await callAPI(`${chat}\n---\n${settings.summaryPrompt}`);
+        const summary = await callAPI(chat + "\n---\n" + settings.summaryPrompt);
         out.textContent = summary;
 
         settings.savedSummaries.push({
             time: new Date().toLocaleString(),
-            range: `${start + 1}-${len}`,
+            range: (start + 1) + "-" + len,
             content: summary
         });
 
@@ -470,7 +486,7 @@ async function doSummarize() {
             const hideUntil = len - settings.keepVisible;
             if (hideUntil > 0) {
                 hideMessages(0, hideUntil);
-                out.textContent = `[已隐藏 1-${hideUntil} 楼]\n\n${summary}`;
+                out.textContent = "[已隐藏 1-" + hideUntil + " 楼]\n\n" + summary;
             }
         }
 
@@ -504,11 +520,11 @@ async function checkAuto() {
 
             out.textContent = "[自动总结中...]";
 
-            const summary = await callAPI(`${chat}\n---\n${settings.summaryPrompt}`);
+            const summary = await callAPI(chat + "\n---\n" + settings.summaryPrompt);
 
             settings.savedSummaries.push({
                 time: new Date().toLocaleString(),
-                range: `${start + 1}-${len}`,
+                range: (start + 1) + "-" + len,
                 content: summary,
                 auto: true
             });
@@ -524,7 +540,7 @@ async function checkAuto() {
             saveSettings();
             updateHideStatus();
 
-            out.textContent = `[自动总结完成]\n${summary}`;
+            out.textContent = "[自动总结完成]\n" + summary;
 
         } catch (e) {
             console.error("自动总结失败", e);
@@ -538,7 +554,7 @@ function showHistory() {
     const out = document.getElementById("summarizer-output");
     if (!s.savedSummaries.length) { out.textContent = "无历史"; return; }
     out.textContent = s.savedSummaries.slice().reverse().map(x =>
-        `【${x.time}】${x.range}${x.auto ? " (自动)" : ""}\n${x.content}`
+        "【" + x.time + "】" + x.range + (x.auto ? " (自动)" : "") + "\n" + x.content
     ).join("\n\n---\n\n");
 }
 
@@ -554,8 +570,6 @@ jQuery(() => {
     loadSettings();
     const s = getSettings();
 
-    window.summarizerRemoveRule = removeRule;
-
     const html = `
     <div class="inline-drawer">
         <div class="inline-drawer-toggle inline-drawer-header">
@@ -563,7 +577,6 @@ jQuery(() => {
             <div class="inline-drawer-icon fa-solid fa-circle-chevron-down"></div>
         </div>
         <div class="inline-drawer-content">
-
             <div style="display:flex;gap:10px;margin-bottom:8px;">
                 <div style="flex:1;"><label>API地址:</label><input type="text" id="summarizer-api-endpoint" class="text_pole" placeholder="https://xxx/v1"></div></input>
                 <div style="flex:1;"><label>API密钥:</label><input type="password" id="summarizer-api-key" class="text_pole"></div></input>
@@ -575,17 +588,13 @@ jQuery(() => {
                 <button id="summarizer-test-btn" class="menu_button">测试</button>
             </div>
             <div id="summarizer-status" style="font-size:12px;color:gray;margin-bottom:8px;">未连接</div>
-
-            <hr>
-</hr>
+            <hr></hr>
             <details style="margin:8px 0;">
                 <summary style="cursor:pointer;font-weight:bold;">📋 内容提取规则</summary>
                 <div style="padding:8px;background:rgba(0,0,0,0.2);border-radius:5px;margin-top:5px;">
-
                     <label class="checkbox_label" style="margin-bottom:8px;">
                         <input type="checkbox" id="summarizer-use-extraction"> 启用提取规则</input>
                     </label>
-
                     <div style="margin-bottom:8px;">
                         <label>预设规则:</label>
                         <div style="display:flex;gap:5px;flex-wrap:wrap;margin-top:3px;">
@@ -595,7 +604,6 @@ jQuery(() => {
                             <button class="menu_button" style="font-size:11px;" id="preset-details-summary">details摘要</button>
                         </div>
                     </div>
-
                     <div style="margin-bottom:8px;">
                         <label>自定义规则:</label>
                         <div style="display:flex;gap:5px;margin-top:3px;">
@@ -609,21 +617,17 @@ jQuery(() => {
                             <button class="menu_button" id="summarizer-add-rule">添加</button>
                         </div>
                     </div>
-
                     <div style="margin-bottom:8px;">
                         <label>当前规则:</label>
                         <div id="summarizer-rules-list" style="margin-top:3px;max-height:120px;overflow-y:auto;"></div>
                     </div>
-
                     <div style="display:flex;gap:5px;">
                         <button class="menu_button" id="summarizer-test-extract">测试提取</button>
                         <button class="menu_button" id="summarizer-clear-rules">清空规则</button>
                     </div>
                 </div>
             </details>
-
-            <hr>
-</hr>
+            <hr></hr>
             <div style="display:flex;gap:10px;margin:8px 0;">
                 <div style="flex:2;"><label>提示词:</label><textarea id="summarizer-prompt" class="text_pole" rows="2"></textarea></div>
                 <div style="flex:1;"><label>总结条数:</label><input type="number" id="summarizer-max-msgs" class="text_pole" min="5" max="200"></div></input>
@@ -636,16 +640,13 @@ jQuery(() => {
                 <label class="checkbox_label"><input type="checkbox" id="summarizer-auto-enabled"> 自动总结</input></label>
                 <label class="checkbox_label"><input type="checkbox" id="summarizer-auto-hide"> 自动隐藏</label>
             </div>
-
             <div id="summarizer-hide-status" style="font-size:12px;color:#888;margin:5px 0;">显示: - | 隐藏: - | 总计: -</div>
-
             <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;">
                 <button id="summarizer-btn" class="menu_button">总结</button>
                 <button id="summarizer-history-btn" class="menu_button">历史</button>
                 <button id="summarizer-clear-btn" class="menu_button">清空</button>
                 <button id="summarizer-unhide-btn" class="menu_button">取消隐藏</button>
             </div>
-
             <div id="summarizer-output" style="margin-top:10px;padding:10px;background:var(--SmartThemeBlurTintColor);border-radius:5px;max-height:200px;overflow-y:auto;white-space:pre-wrap;">就绪</div>
         </div>
     </div>`;
@@ -671,16 +672,16 @@ jQuery(() => {
     $("#summarizer-clear-btn").on("click", clearHistory);
     $("#summarizer-unhide-btn").on("click", unhideAll);
 
-    $("#preset-game-loadall").on("click", () => addPresetRule('game-loadall'));
-    $("#preset-html-comment").on("click", () => addPresetRule('html-comment'));
-    $("#preset-content-tag").on("click", () => addPresetRule('content-tag'));
-    $("#preset-details-summary").on("click", () => addPresetRule('details-summary'));
+    $("#preset-game-loadall").on("click", () => addPresetRule("game-loadall"));
+    $("#preset-html-comment").on("click", () => addPresetRule("html-comment"));
+    $("#preset-content-tag").on("click", () => addPresetRule("content-tag"));
+    $("#preset-details-summary").on("click", () => addPresetRule("details-summary"));
 
     $("#summarizer-add-rule").on("click", () => {
         const type = $("#summarizer-rule-type").val();
         const value = $("#summarizer-rule-value").val();
         addCustomRule(type, value);
-        $("#summarizer-rule-value").val('');
+        $("#summarizer-rule-value").val("");
     });
 
     $("#summarizer-test-extract").on("click", testExtraction);
