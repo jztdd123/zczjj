@@ -1,5 +1,5 @@
 import { getContext, extension_settings } from "../../../extensions.js";
-import { eventSource, event_types, saveSettingsDebounced, saveChatConditional } from "../../../../script.js";
+import { eventSource, event_types, saveSettingsDebounced, saveChatConditional, chat_metadata } from "../../../../script.js";
 
 const extensionName = "st-summarizer";
 const localStorageKey = "summarizer_credentials";
@@ -88,7 +88,7 @@ function getChatId() {
     return context.chatId || null;
 }
 
-// ============ 隐藏功能（按你给的方式重写）============
+// ============ 隐藏功能 ============
 
 async function hideMessages(startIdx, endIdx) {
     const context = getContext();
@@ -106,7 +106,6 @@ async function hideMessages(startIdx, endIdx) {
             chat[i].is_system = true;
             count++;
 
-            // 更新DOM
             const messageBlock = $(`#chat .mes[mesid="${i}"]`);
             if (messageBlock.length) {
                 messageBlock.attr('is_system', 'true');
@@ -129,7 +128,6 @@ async function unhideAll() {
 
     let count = 0;
     for (let i = 0; i < chat.length; i++) {
-        // 只恢复我们隐藏的（不是真正的系统消息）
         if (chat[i].is_system && chat[i].mes) {
             chat[i].is_system = false;
             count++;
@@ -185,7 +183,6 @@ function updateHideStatus() {
     const chat = context.chat;
     if (!chat) return;
 
-    // is_system=true 且有内容的视为隐藏，is_system=false 的视为显示
     let hidden = 0;
     let visible = 0;
     for (const m of chat) {
@@ -259,15 +256,26 @@ async function getWorldInfoList() {
 
 async function bindWorldInfoToChat(worldName) {
     try {
-        const context = getContext();
+        // 直接操作全局 chat_metadata
+        if (typeof chat_metadata !== 'undefined' && chat_metadata) {
+            if (!chat_metadata.world_info) chat_metadata.world_info = [];
 
-        if (!context.chatMetadata) context.chatMetadata = {};
-        if (!context.chatMetadata.world_info) context.chatMetadata.world_info = [];
+            if (!chat_metadata.world_info.includes(worldName)) {
+                chat_metadata.world_info.push(worldName);
+                await saveChatConditional();
+                console.log(`世界书 ${worldName} 已绑定到当前聊天`);
+            }
+        } else {
+            // 备用方案
+            const context = getContext();
+            if (!context.chatMetadata) context.chatMetadata = {};
+            if (!context.chatMetadata.world_info) context.chatMetadata.world_info = [];
 
-        if (!context.chatMetadata.world_info.includes(worldName)) {
-            context.chatMetadata.world_info.push(worldName);
-            await saveChatConditional();
-            console.log(`世界书 ${worldName} 已绑定到当前聊天`);
+            if (!context.chatMetadata.world_info.includes(worldName)) {
+                context.chatMetadata.world_info.push(worldName);
+                await saveChatConditional();
+                console.log(`世界书 ${worldName} 已绑定到当前聊天`);
+            }
         }
         return true;
     } catch (e) {
@@ -300,7 +308,6 @@ async function writeSummaryToWorldInfo(summary, range) {
         let entryName = settings.currentEntryName;
         const chatId = getChatId();
 
-        // 新聊天或没有条目时创建新的
         if (!entryUid || !worldData.entries[entryUid] || settings.currentChatId !== chatId) {
             const timestamp = getTimestamp();
             entryName = `${charName} - ${timestamp}`;
@@ -668,26 +675,21 @@ jQuery(() => {
     $("#summarizer-clear-btn").on("click", clearHistory);
     $("#summarizer-unhide-btn").on("click", unhideAll);
 
-        // ... 前面的代码保持不变 ...
-
     eventSource.on(event_types.MESSAGE_RECEIVED, () => setTimeout(checkAuto, 1000));
     eventSource.on(event_types.MESSAGE_SENT, () => setTimeout(checkAuto, 1000));
 
     setTimeout(updateHideStatus, 500);
 
-    // ============ 新增：自动获取模型列表 ============
-    // 延迟执行，确保页面加载完成
+    // 自动获取模型列表
     setTimeout(() => {
         const settings = getSettings();
-        // 只有在配置了API地址和密钥时才自动获取
         if (settings.apiEndpoint && settings.apiKey) {
             console.log("痔疮总结机: 自动获取模型列表...");
             refreshModelList().catch(e => {
-                console.log("痔疮总结机: 自动获取模型失败，可能需要检查API配置");
+                console.log("痔疮总结机: 自动获取模型失败");
             });
         }
-    }, 1500); // 1.5秒延迟，确保酒馆完全加载
+    }, 1500);
 
     console.log("痔疮总结机 loaded");
 });
-
