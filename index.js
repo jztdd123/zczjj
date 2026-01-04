@@ -1,5 +1,6 @@
+// @ts-nocheck
 import { getContext, extension_settings } from "../../../extensions.js";
-import { eventSource, event_types, saveSettingsDebounced, saveChatConditional, chat_metadata } from "../../../../script.js";
+import { eventSource, event_types, saveSettingsDebounced, saveChatConditional } from "../../../../script.js";
 
 const extensionName = "st-summarizer";
 const localStorageKey = "summarizer_credentials";
@@ -197,124 +198,206 @@ function updateHideStatus() {
     if (statusEl) statusEl.textContent = `显示: ${visible} | 隐藏: ${hidden} | 总: ${chat.length}`;
 }
 
-// ============ 世界书功能 ============
+// ============ 世界书功能（修复版） ============
 
+/**
+ * 获取请求头
+ */
+function getRequestHeaders() {
+    return {
+        'Content-Type': 'application/json',
+        'X-CSRF-Token': document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || ''
+    };
+}
+
+/**
+ * 加载世界书数据
+ */
 async function loadWorldInfo(worldName) {
     try {
         const response = await fetch('/api/worldinfo/get', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: getRequestHeaders(),
             body: JSON.stringify({ name: worldName })
         });
-        if (!response.ok) return null;
-        return await response.json();
+        if (!response.ok) {
+            console.error(`加载世界书失败: ${response.status} ${response.statusText}`);
+            return null;
+        }
+        const data = await response.json();
+        console.log(`成功加载世界书 "${worldName}":`, data);
+        return data;
     } catch (e) {
         console.error("加载世界书失败:", e);
         return null;
     }
 }
 
+/**
+ * 保存世界书数据
+ */
 async function saveWorldInfo(worldName, data) {
     try {
         const response = await fetch('/api/worldinfo/edit', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: getRequestHeaders(),
             body: JSON.stringify({ name: worldName, data: data })
         });
-        return response.ok;
+        if (!response.ok) {
+            console.error(`保存世界书失败: ${response.status} ${response.statusText}`);
+            return false;
+        }
+        console.log(`成功保存世界书 "${worldName}"`);
+        return true;
     } catch (e) {
         console.error("保存世界书失败:", e);
         return false;
     }
 }
 
+/**
+ * 创建新的世界书
+ */
 async function createWorldInfo(worldName) {
     try {
         const response = await fetch('/api/worldinfo/create', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: getRequestHeaders(),
             body: JSON.stringify({ name: worldName })
         });
-        return response.ok;
+        if (!response.ok) {
+            console.error(`创建世界书失败: ${response.status} ${response.statusText}`);
+            return false;
+        }
+        console.log(`成功创建世界书 "${worldName}"`);
+        return true;
     } catch (e) {
         console.error("创建世界书失败:", e);
         return false;
     }
 }
 
+/**
+ * 获取世界书列表
+ */
 async function getWorldInfoList() {
     try {
-        const response = await fetch('/api/worldinfo/list', { method: 'GET' });
-        if (!response.ok) return [];
+        const response = await fetch('/api/worldinfo/list', {
+            method: 'GET',
+            headers: getRequestHeaders()
+        });
+        if (!response.ok) {
+            console.error(`获取世界书列表失败: ${response.status}`);
+            return [];
+        }
         const data = await response.json();
-        return data.entries || data || [];
+        // 处理不同的返回格式
+        const entries = data.entries || data || [];
+        console.log(`获取到 ${entries.length} 个世界书`);
+        return entries;
     } catch (e) {
         console.error("获取世界书列表失败:", e);
         return [];
     }
 }
 
+/**
+ * 绑定世界书到当前聊天
+ */
 async function bindWorldInfoToChat(worldName) {
     try {
-        // 直接操作全局 chat_metadata
-        if (typeof chat_metadata !== 'undefined' && chat_metadata) {
-            if (!chat_metadata.world_info) chat_metadata.world_info = [];
+        const context = getContext();
 
-            if (!chat_metadata.world_info.includes(worldName)) {
-                chat_metadata.world_info.push(worldName);
-                await saveChatConditional();
-                console.log(`世界书 ${worldName} 已绑定到当前聊天`);
-            }
-        } else {
-            // 备用方案
-            const context = getContext();
-            if (!context.chatMetadata) context.chatMetadata = {};
-            if (!context.chatMetadata.world_info) context.chatMetadata.world_info = [];
-
-            if (!context.chatMetadata.world_info.includes(worldName)) {
-                context.chatMetadata.world_info.push(worldName);
-                await saveChatConditional();
-                console.log(`世界书 ${worldName} 已绑定到当前聊天`);
-            }
+        // 确保 chatMetadata 存在
+        if (!context.chatMetadata) {
+            context.chatMetadata = {};
         }
-        return true;
+
+        // 确保 world_info 数组存在
+        if (!context.chatMetadata.world_info) {
+            context.chatMetadata.world_info = [];
+        }
+
+        // 检查是否已绑定
+        if (!context.chatMetadata.world_info.includes(worldName)) {
+            context.chatMetadata.world_info.push(worldName);
+
+            // 保存聊天以持久化元数据更改
+            await saveChatConditional();
+
+            console.log(`世界书 "${worldName}" 已绑定到当前聊天`);
+            return true;
+        } else {
+            console.log(`世界书 "${worldName}" 已经绑定`);
+            return true;
+        }
     } catch (e) {
         console.error("绑定世界书失败:", e);
         return false;
     }
 }
 
+/**
+ * 写入总结到世界书
+ */
 async function writeSummaryToWorldInfo(summary, range) {
     const settings = getSettings();
-    if (!settings.autoWorldInfo) return null;
+    if (!settings.autoWorldInfo) {
+        console.log("自动写入世界书已禁用");
+        return null;
+    }
 
     const charName = getCharacterName();
     const worldBookName = `${charName}_Summaries`;
 
     try {
+        // 获取世界书列表并检查是否存在
         const worldList = await getWorldInfoList();
-        const exists = worldList.some(w => (typeof w === 'string' ? w : w.name) === worldBookName);
+        const exists = worldList.some(w => {
+            const name = typeof w === 'string' ? w : w.name;
+            return name === worldBookName;
+        });
 
+        // 如果不存在则创建
         if (!exists) {
-            await createWorldInfo(worldBookName);
+            const createResult = await createWorldInfo(worldBookName);
+            if (!createResult) {
+                console.error(`无法创建世界书: ${worldBookName}`);
+                return null;
+            }
             console.log(`创建世界书: ${worldBookName}`);
+
+            // 等待一小段时间确保创建完成
+            await new Promise(resolve => setTimeout(resolve, 500));
         }
 
+        // 加载世界书数据
         let worldData = await loadWorldInfo(worldBookName);
-        if (!worldData) worldData = { entries: {} };
-        if (!worldData.entries) worldData.entries = {};
+        if (!worldData) {
+            worldData = { entries: {} };
+        }
+        if (!worldData.entries) {
+            worldData.entries = {};
+        }
 
         let entryUid = settings.currentEntryUid;
         let entryName = settings.currentEntryName;
         const chatId = getChatId();
 
-        if (!entryUid || !worldData.entries[entryUid] || settings.currentChatId !== chatId) {
+        // 检查是否需要创建新条目（新聊天或无现有条目）
+        const needNewEntry = !entryUid ||
+                            !worldData.entries[entryUid] ||
+                            settings.currentChatId !== chatId;
+
+        if (needNewEntry) {
             const timestamp = getTimestamp();
             entryName = `${charName} - ${timestamp}`;
 
+            // 生成新的 UID
             const existingUids = Object.keys(worldData.entries).map(Number).filter(n => !isNaN(n));
             entryUid = existingUids.length > 0 ? Math.max(...existingUids) + 1 : 0;
 
+            // 创建新条目
             worldData.entries[entryUid] = {
                 uid: entryUid,
                 key: [],
@@ -347,12 +430,15 @@ async function writeSummaryToWorldInfo(summary, range) {
                 delay: null
             };
 
+            // 更新设置
             settings.currentEntryUid = entryUid;
             settings.currentEntryName = entryName;
             settings.currentChatId = chatId;
+
             console.log(`创建新条目: ${entryName} (UID: ${entryUid})`);
         }
 
+        // 更新条目内容
         const entry = worldData.entries[entryUid];
         const newContent = `\n\n【${getTimestamp()}】消息 ${range}:\n${summary}`;
 
@@ -362,10 +448,23 @@ async function writeSummaryToWorldInfo(summary, range) {
             entry.content = `# ${entryName} 对话总结${newContent}`;
         }
 
-        await saveWorldInfo(worldBookName, worldData);
-        await bindWorldInfoToChat(worldBookName);
+        // 保存世界书
+        const saveResult = await saveWorldInfo(worldBookName, worldData);
+        if (!saveResult) {
+            console.error("保存世界书失败");
+            return null;
+        }
+
+        // 绑定到当前聊天
+        const bindResult = await bindWorldInfoToChat(worldBookName);
+        if (!bindResult) {
+            console.warn("绑定世界书失败，但总结已保存");
+        }
+
+        // 保存设置
         saveSettings();
 
+        console.log(`总结已写入世界书 "${worldBookName}", 条目 "${entryName}"`);
         return { worldBookName, entryName };
 
     } catch (e) {
@@ -423,6 +522,12 @@ async function testConnection() {
 async function refreshModelList() {
     const sel = document.getElementById("summarizer-model-select");
     const status = document.getElementById("summarizer-status");
+
+    if (!sel || !status) {
+        console.log("痔疮总结机: UI元素未就绪，跳过模型列表刷新");
+        return;
+    }
+
     sel.innerHTML = '<option>加载中...</option>';
     status.textContent = "获取模型...";
     status.style.color = "orange";
@@ -686,7 +791,7 @@ jQuery(() => {
         if (settings.apiEndpoint && settings.apiKey) {
             console.log("痔疮总结机: 自动获取模型列表...");
             refreshModelList().catch(e => {
-                console.log("痔疮总结机: 自动获取模型失败");
+                console.log("痔疮总结机: 自动获取模型失败，可能需要检查API配置");
             });
         }
     }, 1500);
