@@ -668,10 +668,26 @@ jQuery(() => {
     $("#summarizer-clear-btn").on("click", clearHistory);
     $("#summarizer-unhide-btn").on("click", unhideAll);
 
+        // ... 前面的代码保持不变 ...
+
     eventSource.on(event_types.MESSAGE_RECEIVED, () => setTimeout(checkAuto, 1000));
     eventSource.on(event_types.MESSAGE_SENT, () => setTimeout(checkAuto, 1000));
 
     setTimeout(updateHideStatus, 500);
 
+    // ============ 新增：自动获取模型列表 ============
+    // 延迟执行，确保页面加载完成
+    setTimeout(() => {
+        const settings = getSettings();
+        // 只有在配置了API地址和密钥时才自动获取
+        if (settings.apiEndpoint && settings.apiKey) {
+            console.log("痔疮总结机: 自动获取模型列表...");
+            refreshModelList().catch(e => {
+                console.log("痔疮总结机: 自动获取模型失败，可能需要检查API配置");
+            });
+        }
+    }, 1500); // 1.5秒延迟，确保酒馆完全加载
+
     console.log("痔疮总结机 loaded");
 });
+
